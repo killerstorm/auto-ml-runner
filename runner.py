@@ -413,7 +413,7 @@ Important guidelines:
 - Always use fp32 by default to avoid NaN issues
 - Include proper error handling and logging
 - Log output should go to standard out and standard error, which will be captured by the experiment runner for further analysis
-- Do not use tqdm for progress bars
+- Do not make progress bars (tqdm, etc)
 - Do not create any files unless it's necessary according to the plan
 - Make incremental improvements based on previous results
 - Focus on achieving the experimental goals
@@ -425,7 +425,6 @@ File Management:
 - If your code produces files needed by future runs (e.g., model checkpoints), save them in the current directory
 - If you need to share immutable reference data across all runs, copy it to ../shared_files/
 - The plan will specify file paths relative to the run directory when files are needed
-- Check the plan for any file paths mentioned - they indicate resources you should use
 
 General Plan:
 {plan}
