@@ -13,15 +13,15 @@ class ModelConfig:
     code_model: str = "anthropic/claude-3.5-sonnet"
     report_model: str = "anthropic/claude-3.5-sonnet"
     plan_model: Optional[str] = None
-    tasks_model: Optional[str] = None
+    analysis_model: Optional[str] = None
     
     def __post_init__(self):
         # Override with environment variables if present
         self.summarize_model = os.getenv("SUMMARIZE_MODEL", self.summarize_model)
         self.code_model = os.getenv("CODE_MODEL", self.code_model)
-        self.report_model = os.getenv("REPORT_MODEL", self.report_model)
+        self.report_model = os.getenv("REPORT_MODEL", self.report_model or self.code_model)
         self.plan_model = os.getenv("PLAN_MODEL", self.plan_model or self.code_model)
-        self.tasks_model = os.getenv("TASKS_MODEL", self.tasks_model or self.summarize_model)
+        self.analysis_model = os.getenv("ANALYSIS_MODEL", self.analysis_model or self.code_model)
 
 
 @dataclass
@@ -34,6 +34,7 @@ class RunConfig:
     max_tokens_code: int = 8000
     max_tokens_summary: int = 2000
     max_tokens_report: int = 4000
+    max_tokens_analysis: int = 8000
     
     def __post_init__(self):
         # Override with environment variables if present

@@ -299,6 +299,38 @@ class ExperimentRunner:
             return prev_log_file.read_text()
         return None
     
+    def get_or_create_log_summary(self, run_number: int, logs: Optional[str] = None) -> Optional[str]:
+        """Get existing log summary or create a new one if needed.
+        
+        Args:
+            run_number: The run number to get/create summary for
+            logs: Optional log content if summary needs to be created
+            
+        Returns:
+            Log summary string, or None if no logs available
+        """
+        run_dir = self.experiment_dir / f"run_{run_number}"
+        summary_file = run_dir / "summary.txt"
+        
+        # Check if summary already exists
+        if summary_file.exists():
+            return summary_file.read_text()
+        
+        # If no logs provided, try to read from log file
+        if logs is None:
+            log_file = run_dir / "output.log"
+            if not log_file.exists():
+                return None
+            logs = log_file.read_text()
+        
+        # Generate new summary
+        summary = self.summarize_logs(logs, run_number)
+        
+        # Save summary to file
+        summary_file.write_text(summary)
+        
+        return summary
+    
     def summarize_logs(self, logs: str, run_number: int) -> str:
         """Use LLM to create a mechanical summary of the logs."""
         # First extract key information
@@ -352,7 +384,7 @@ Do NOT interpret or analyze - just extract factual information.""")
         
         return self.client.get_completion_text(response)
     
-    def generate_code(self, run_number: int, previous_code: Optional[str], log_summary: Optional[str]) -> str:
+    def generate_code(self, run_number: int, previous_code: Optional[str], log_summary: Optional[str]) -> Tuple[List[str], str]:
         """Generate code for the next run."""
         idea = self.read_file_safe(self.idea_file)
         plan = self.read_file_safe(self.plan_file)
@@ -423,8 +455,17 @@ Tasks Status:
 """
 
         
-        user_prompt += """Based on the above context, generate an improved version of main.py that addresses any issues and makes progress toward the experimental goals. 
-        Return ONLY the Python code wrapped in ```python...```, no explanations."""
+        user_prompt += """Based on the above context, generate an improved version of main.py that addresses any issues and makes progress toward the experimental goals.
+
+IMPORTANT: Start your response with a list of task IDs you will be working on in this run, formatted as:
+
+WORKING_ON_TASKS:
+- task_001
+- task_003
+
+---
+
+Then provide the Python code wrapped in ```python...```, no other explanations."""
         
         messages = [
             Message("system", system_prompt_text),
@@ -438,7 +479,25 @@ Tasks Status:
             max_tokens=self.config.max_tokens_code
         )
         
-        code = self.client.get_completion_text(response).strip()
+        full_response = self.client.get_completion_text(response).strip()
+        
+        # Parse out the working tasks and code
+        working_tasks = []
+        code = full_response
+        
+        if "WORKING_ON_TASKS:" in full_response:
+            parts = full_response.split("---", 1)
+            if len(parts) == 2:
+                task_section = parts[0]
+                code = parts[1].strip()
+                
+                # Extract task IDs
+                lines = task_section.split('\n')
+                for line in lines:
+                    line = line.strip()
+                    if line.startswith('- task_'):
+                        task_id = line[2:].strip()  # Remove "- "
+                        working_tasks.append(task_id)
         
         # Clean up code formatting
         if code.startswith("```python"):
@@ -448,7 +507,7 @@ Tasks Status:
         if code.endswith("```"):
             code = code[:-3]
         
-        return code.strip()
+        return working_tasks, code.strip()
     
     def revise_plan(self, reason: str):
         """Revise the experimental plan based on current findings."""
@@ -596,6 +655,9 @@ Analyze what happened and provide:
    - plan_revision_needed: Should we revise the experimental plan based on current progress?
    - early_exit_required: Are there blockers preventing further progress?
 4. Task updates based on the results
+
+Note: Only signal `plan_revision_needed` if a substantial change is necessary. Otherwise, needed changes can
+be communicated through the list of tasks, key findings, and analysis.
 
 For task updates, you can:
 - Mark tasks as complete (with notes)
@@ -833,7 +895,7 @@ Organize by priority and include dependencies where relevant.""")
             
             response = self.client.chat_completion(
                 messages=messages,
-                model=self.model_config.tasks_model,
+                model=self.model_config.analysis_model,
                 temperature=0.3,
                 max_tokens=2000,
                 response_format={"type": "json_schema", "json_schema": {"name": "initial_tasks", "schema": INITIAL_TASKS_SCHEMA}}
@@ -893,7 +955,7 @@ Organize by priority and include dependencies where relevant.""")
                     console=console
                 ) as progress:
                     task = progress.add_task("Summarizing previous run...", total=None)
-                    log_summary = self.summarize_logs(previous_logs, current_run - 1)
+                    log_summary = self.get_or_create_log_summary(current_run - 1, previous_logs)
                     progress.remove_task(task)
                 
                 log_success("Summarized previous run")
@@ -905,10 +967,16 @@ Organize by priority and include dependencies where relevant.""")
                 console=console
             ) as progress:
                 task = progress.add_task("Generating code...", total=None)
-                code = self.generate_code(current_run, previous_code, log_summary)
+                working_tasks, code = self.generate_code(current_run, previous_code, log_summary)
                 progress.remove_task(task)
             
             log_success("Generated new code")
+            
+            # Mark tasks as in_progress
+            if working_tasks:
+                for task_id in working_tasks:
+                    self.task_manager.update_task(task_id, status='in_progress')
+                log_info(f"Working on tasks: {', '.join(working_tasks)}")
             
             # Save generated code
             code_file = run_dir / "main.py"
@@ -929,7 +997,7 @@ Organize by priority and include dependencies where relevant.""")
                 console=console
             ) as progress:
                 task = progress.add_task("Analyzing results...", total=None)
-                current_summary = self.summarize_logs(output, current_run)
+                current_summary = self.get_or_create_log_summary(current_run, output)
                 progress.remove_task(task)
             
             # Update global state
