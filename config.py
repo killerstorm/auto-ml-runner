@@ -41,3 +41,15 @@ class RunConfig:
         self.max_retries = int(os.getenv("MAX_RETRIES", self.max_retries))
         self.timeout_seconds = int(os.getenv("TIMEOUT_SECONDS", self.timeout_seconds))
         self.temperature = float(os.getenv("TEMPERATURE", self.temperature))
+
+
+@dataclass
+class LoggingConfig:
+    """Configuration for LLM interaction logging."""
+    enable_logging: bool = False
+    log_dir: str = "llm_logs"
+    
+    def __post_init__(self):
+        # Override with environment variables if present
+        self.enable_logging = os.getenv("LLM_ENABLE_LOGGING", "false").lower() in ("true", "1", "yes")
+        self.log_dir = os.getenv("LLM_LOG_DIR", self.log_dir)

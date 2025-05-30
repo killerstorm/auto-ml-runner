@@ -72,10 +72,10 @@ experiment/
 ├── KEY_FINDINGS.md   # Analysis and insights from each run
 ├── REPORT.md         # Final report (generated at end)
 ├── run_1/
-│   ├── train.py      # Generated training code
+│   ├── main.py      # Generated training code
 │   └── output.log    # Training output
 ├── run_2/
-│   ├── train.py
+│   ├── main.py
 │   └── output.log
 └── ...
 ```
@@ -96,3 +96,18 @@ Environment variables (in .env):
 - `REPORT_MODEL`: Model for report generation (default: anthropic/claude-3.5-sonnet)
 - `MAX_RUNS`: Maximum number of runs (default: 10)
 - `TIMEOUT_SECONDS`: Timeout per run in seconds (default: 7200)
+
+### LLM Interaction Logging
+
+Enable detailed logging of all LLM interactions:
+- `LLM_ENABLE_LOGGING`: Enable logging (true/false, default: false)
+- `LLM_LOG_DIR`: Directory for log files (default: llm_logs)
+
+When enabled, logs include:
+- Complete prompts and messages
+- Model parameters (temperature, max_tokens, etc.)
+- Full responses including token usage
+- Timestamps and unique request IDs
+- Errors and retry attempts
+
+See [README_LOGGING.md](README_LOGGING.md) for detailed logging documentation.

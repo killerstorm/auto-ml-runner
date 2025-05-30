@@ -76,6 +76,29 @@ ANALYSIS_AND_TASKS_SCHEMA = {
             "maxItems": 5,
             "description": "Key findings from this run (max 5)"
         },
+        "experiment_state": {
+            "type": "object",
+            "properties": {
+                "experiment_complete": {
+                    "type": "boolean",
+                    "description": "True if experiment goals have been achieved and final report should be generated"
+                },
+                "plan_revision_needed": {
+                    "type": "boolean",
+                    "description": "True if the experimental plan should be revised based on current findings"
+                },
+                "early_exit_required": {
+                    "type": "boolean",
+                    "description": "True if no further progress can be made (e.g., missing dependencies, fundamental blockers)"
+                },
+                "reason": {
+                    "type": "string",
+                    "description": "Explanation for any state flags set to true"
+                }
+            },
+            "required": ["experiment_complete", "plan_revision_needed", "early_exit_required"],
+            "description": "High-level experiment state indicators"
+        },
         "task_updates": {
             "type": "array",
             "items": {
@@ -128,7 +151,7 @@ ANALYSIS_AND_TASKS_SCHEMA = {
             "description": "List of task updates to perform"
         }
     },
-    "required": ["analysis", "key_findings", "task_updates"]
+    "required": ["analysis", "key_findings", "experiment_state", "task_updates"]
 }
 
 INITIAL_TASKS_SCHEMA = {
