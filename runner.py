@@ -486,7 +486,7 @@ Then provide the Python code wrapped in ```python...```, no other explanations."
         code = full_response
         
         if "WORKING_ON_TASKS:" in full_response:
-            parts = full_response.split("---", 1)
+            parts = full_response.split("```python", 1)
             if len(parts) == 2:
                 task_section = parts[0]
                 code = parts[1].strip()
@@ -495,7 +495,7 @@ Then provide the Python code wrapped in ```python...```, no other explanations."
                 lines = task_section.split('\n')
                 for line in lines:
                     line = line.strip()
-                    if line.startswith('- task_'):
+                    if line.startswith('- '):
                         task_id = line[2:].strip()  # Remove "- "
                         working_tasks.append(task_id)
         
