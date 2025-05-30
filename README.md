@@ -1,5 +1,8 @@
 # Auto ML Runner
 
+NOTE: CURRENTLY LACKING EXIT CRITERIA AND ABORT ON FATAL ERROR.
+USE AT YOUR OWN RISK, it WILL RUN AI-GENERATED CODE without SANDBOX OF ANY KIND.
+
 An automated ML experiment runner that uses LLMs to iteratively improve code and achieve experimental goals.
 
 ## Features
@@ -58,13 +61,6 @@ Options:
    - Analyzes results and updates tasks in a single LLM call
    - Updates KEY_FINDINGS.md with analysis
 3. **Finalization**: Generates comprehensive REPORT.md
-
-## Key Improvements
-
-- **Mechanical Log Summarization**: Uses pattern matching to extract metrics, errors, and warnings without LLM interpretation
-- **Combined Analysis**: Single LLM call produces both analysis and task updates using structured JSON output
-- **JSON Task Management**: Tasks stored in structured format for better programmatic access
-- **Semantic Console Output**: Theme-aware output without hardcoded colors
 
 ## File Structure
 
