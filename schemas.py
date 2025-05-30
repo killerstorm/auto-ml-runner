@@ -106,7 +106,7 @@ ANALYSIS_AND_TASKS_SCHEMA = {
                 "properties": {
                     "action": {
                         "type": "string",
-                        "enum": ["complete", "add", "update"],
+                        "enum": ["complete", "add", "update", "remove"],
                         "description": "Action to perform on tasks"
                     },
                     "task_id": {
@@ -136,6 +136,10 @@ ANALYSIS_AND_TASKS_SCHEMA = {
                 "allOf": [
                     {
                         "if": {"properties": {"action": {"const": "complete"}}},
+                        "then": {"required": ["task_id"]}
+                    },
+                    {
+                        "if": {"properties": {"action": {"const": "remove"}}},
                         "then": {"required": ["task_id"]}
                     },
                     {

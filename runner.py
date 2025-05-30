@@ -660,6 +660,7 @@ Note: Only signal `plan_revision_needed` if a substantial change is necessary. O
 be communicated through the list of tasks, key findings, and analysis.
 
 For task updates, you can:
+- Remove tasks that are no longer relevant
 - Mark tasks as complete (with notes)
 - Add new tasks discovered during the run
 - Update task status to blocked if there are dependencies""")
@@ -771,7 +772,7 @@ For task updates, you can:
         idea = self.read_file_safe(self.idea_file)
         
         messages = [
-            Message("system", "You are writing a comprehensive report on an ML experiment. Be thorough but concise."),
+            Message("system", "You are writing a report on an automated ML experiment. Be thorough but concise."),
             Message("user", f"""Generate a final report for this ML experiment.
 
 Original Idea:
@@ -852,14 +853,14 @@ The plan should include:
 4. Potential challenges and mitigation strategies
 5. Expected outcomes
 6. File management strategy (if applicable):
+   - It might be unnecessary to manage any files explicitly
    - Any shared data/models should reference the ../shared_files/ directory
    - Specify relative paths for any files mentioned in the idea
    - Note which files need to persist across runs
    - Note that some frameworks might cache files transparently, that makes things easier
 
 Important: 
-- If the idea mentions any data files, pretrained models, or other resources,
-  specify their paths relative to the run directory (e.g., ../shared_files/dataset.csv).
+- Do not include too many details, as the plan would be executed by a model which is as smart as you are
 - Consider the available compute resources and installed packages when designing the approach.
 - If GPU is not available, ensure the plan accounts for CPU-only execution.
 
@@ -883,13 +884,17 @@ Format as a structured markdown document.""")
             
             plan = self.plan_file.read_text()
             messages = [
-                Message("system", system_prompt("""a project manager for ML experiments. Create a comprehensive task list.""")),
+                Message("system", system_prompt("""a project manager for ML experiments. Create a general task list.""")),
                 Message("user", f"""Based on this experimental plan, create a task list:
 
 {plan}
 
 Note: We generally assume that the environment is set up, but it's worth checking that it functions as expected.
-This which are already described in the plan do not require detailed descriptions.
+
+Keep things simple, do not create a lot of tasks. Task list will be interpreted by a model which is as smart
+as you (and thus can figure out details on the fly), the primary purpose of the task list is to communicate state 
+between runs.
+
 Organize by priority and include dependencies where relevant.""")
             ]
             
