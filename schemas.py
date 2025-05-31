@@ -21,10 +21,10 @@ INITIAL_TASKS_SCHEMA = {
                     "dependencies": {
                         "type": "array",
                         "items": {"type": "string"},
-                        "description": "List of task descriptions this depends on"
+                        "description": "List of task descriptions this depends on (possibly empty)"
                     }
                 },
-                "required": ["description", "priority"],
+                "required": ["description", "priority", "dependencies"],
                 "additionalProperties": False
             },
             "minItems": 1,
@@ -65,11 +65,11 @@ ANALYSIS_ONLY_SCHEMA = {
                     "description": "True if no further progress can be made (e.g., missing dependencies, fundamental blockers)"
                 },
                 "reason": {
-                    "type": "string",
+                    "type": ["string", "null"],
                     "description": "Explanation for any state flags set to true"
                 }
             },
-            "required": ["experiment_complete", "plan_revision_needed", "early_exit_required"],
+            "required": ["experiment_complete", "plan_revision_needed", "early_exit_required", "reason"],
             "description": "High-level experiment state indicators",
             "additionalProperties": False
         }
@@ -84,56 +84,90 @@ TASK_UPDATES_SCHEMA = {
         "task_updates": {
             "type": "array",
             "items": {
-                "type": "object",
-                "properties": {
-                    "action": {
-                        "type": "string",
-                        "enum": ["complete", "add", "update", "remove"],
-                        "description": "Action to perform on tasks"
+                "anyOf": [
+                    {
+                        "type": "object",
+                        "properties": {
+                            "action": {
+                                "type": "string",
+                                "const": "complete",
+                                "description": "Mark task as complete"
+                            },
+                            "task_id": {
+                                "type": "string",
+                                "description": "Task ID to complete"
+                            }
+                        },
+                        "required": ["action", "task_id"],
+                        "additionalProperties": False
                     },
-                    "task_id": {
-                        "type": "string",
-                        "description": "Task ID (required for complete/update/remove)"
+                    {
+                        "type": "object",
+                        "properties": {
+                            "action": {
+                                "type": "string",
+                                "const": "add",
+                                "description": "Add new task"
+                            },
+                            "description": {
+                                "type": "string",
+                                "description": "Task description"
+                            },
+                            "priority": {
+                                "type": "string",
+                                "enum": ["high", "medium", "low"],
+                                "description": "Task priority"
+                            }
+                        },
+                        "required": ["action", "description", "priority"],
+                        "additionalProperties": False
                     },
-                    "description": {
-                        "type": "string",
-                        "description": "Task description (required for add)"
+                    {
+                        "type": "object",
+                        "properties": {
+                            "action": {
+                                "type": "string",
+                                "const": "update",
+                                "description": "Update task status"
+                            },
+                            "task_id": {
+                                "type": "string",
+                                "description": "Task ID to update"
+                            },
+                            "new_status": {
+                                "type": "string",
+                                "enum": ["pending", "in_progress", "blocked"],
+                                "description": "New status for the task"
+                            },
+                            "notes": {
+                                "type": "string",
+                                "description": "Optional notes about the status update"
+                            }
+                        },
+                        "required": ["action", "task_id", "new_status", "notes"],
+                        "additionalProperties": False
                     },
-                    "priority": {
-                        "type": "string",
-                        "enum": ["high", "medium", "low"],
-                        "description": "Priority (required for add)"
-                    },
-                    "notes": {
-                        "type": "string",
-                        "description": "Notes about the task update"
-                    },
-                    "new_status": {
-                        "type": "string",
-                        "enum": ["pending", "in_progress", "blocked"],
-                        "description": "New status (required for update action)"
+                    {
+                        "type": "object",
+                        "properties": {
+                            "action": {
+                                "type": "string",
+                                "const": "remove",
+                                "description": "Remove task"
+                            },
+                            "task_id": {
+                                "type": "string",
+                                "description": "Task ID to remove"
+                            },
+                            "notes": {
+                                "type": "string",
+                                "description": "Reason for removal"
+                            }
+                        },
+                        "required": ["action", "task_id", "notes"],
+                        "additionalProperties": False
                     }
-                },
-                "required": ["action"],
-                "allOf": [
-                    {
-                        "if": {"properties": {"action": {"const": "complete"}}},
-                        "then": {"required": ["task_id"]}
-                    },
-                    {
-                        "if": {"properties": {"action": {"const": "remove"}}},
-                        "then": {"required": ["task_id"]}
-                    },
-                    {
-                        "if": {"properties": {"action": {"const": "add"}}},
-                        "then": {"required": ["description", "priority"]}
-                    },
-                    {
-                        "if": {"properties": {"action": {"const": "update"}}},
-                        "then": {"required": ["task_id", "new_status"]}
-                    }
-                ],
-                "additionalProperties": False
+                ]
             },
             "description": "List of task updates to perform"
         }
