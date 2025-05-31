@@ -22,8 +22,7 @@ from console_utils import (
     log_progress, log_section, log_panel, log_status
 )
 from task_manager import TaskManager
-from schemas import (
-    LOG_SUMMARY_SCHEMA, ANALYSIS_AND_TASKS_SCHEMA, 
+from schemas import ( 
     INITIAL_TASKS_SCHEMA, ANALYSIS_ONLY_SCHEMA, TASK_UPDATES_SCHEMA
 )
 
