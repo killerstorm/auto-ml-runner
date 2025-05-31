@@ -16,7 +16,7 @@ from rich.panel import Panel
 from rich.markdown import Markdown
 
 from llm_client import OpenRouterClient, Message
-from config import ModelConfig, RunConfig
+from config import ModelConfig, RunConfig, LoggingConfig
 from console_utils import (
     log_info, log_success, log_error, log_warning, 
     log_progress, log_section, log_panel, log_status
@@ -31,7 +31,7 @@ SYSTEM_PROMPT_CONTEXT = "We are conducting automated ML experiments.\n "
 def system_prompt(role: str) -> str:
     return f"""
 {SYSTEM_PROMPT_CONTEXT}
-Your role is {role}.
+Your role is {role}
 """
 
 main_py = "main.py"
@@ -80,19 +80,9 @@ def get_environment_info() -> Dict[str, any]:
         )
         if result.returncode == 0:
             packages = json.loads(result.stdout)
-            # Filter to common ML/data science packages
-            ml_packages = {
-                'torch', 'tensorflow', 'jax', 'numpy', 'pandas', 'scikit-learn',
-                'matplotlib', 'seaborn', 'plotly', 'transformers', 'datasets',
-                'accelerate', 'bitsandbytes', 'peft', 'tokenizers', 'scipy',
-                'opencv-python', 'pillow', 'tqdm', 'wandb', 'tensorboard',
-                'lightning', 'pytorch-lightning', 'torchvision', 'torchaudio'
-            }
             env_info["installed_packages"] = [
                 f"{pkg['name']}=={pkg['version']}" 
                 for pkg in packages 
-                if pkg['name'].lower() in ml_packages or 
-                   any(keyword in pkg['name'].lower() for keyword in ['torch', 'tensor', 'cuda'])
             ]
     except Exception as e:
         env_info["package_error"] = str(e)
@@ -229,7 +219,14 @@ class ExperimentRunner:
         self.experiment_dir = experiment_dir
         self.config = config
         self.model_config = model_config
-        self.client = OpenRouterClient()
+        log_config = LoggingConfig()
+        if log_config.enable_logging: 
+            log_dir = Path(log_config.log_dir)
+            if not log_dir.is_absolute():
+                log_dir = self.experiment_dir / log_dir
+            self.client = OpenRouterClient(log_dir=log_dir, max_retries=self.config.max_retries)
+        else:
+            self.client = OpenRouterClient(max_retries=self.config.max_retries)
         
         # Create experiment directory if it doesn't exist
         self.experiment_dir.mkdir(exist_ok=True)
@@ -333,6 +330,10 @@ class ExperimentRunner:
     
     def summarize_logs(self, logs: str, run_number: int) -> str:
         """Use LLM to create a mechanical summary of the logs."""
+        # Check if logs are empty or contain only whitespace
+        if not logs or not logs.strip():
+            return f"Run {run_number}: No output generated (empty logs)"
+        
         # First extract key information
         key_info = extract_key_log_info(logs)
         
@@ -579,8 +580,8 @@ Format as a structured markdown document.""")
         response = self.client.chat_completion(
             messages=messages,
             model=self.model_config.plan_model,
-            temperature=0.3,
-            max_tokens=5000
+            temperature=self.config.temperature,
+            max_tokens=self.config.max_tokens_code
         )
         
         revised_plan = self.client.get_completion_text(response)
@@ -668,8 +669,8 @@ For task updates, you can:
         response = self.client.chat_completion(
             messages=messages,
             model=self.model_config.code_model,
-            temperature=0.3,
-            max_tokens=3000,
+            temperature=self.config.temperature,
+            max_tokens=self.config.max_tokens_analysis,
             response_format={"type": "json_schema", "json_schema": {"name": "analysis_tasks", "schema": ANALYSIS_AND_TASKS_SCHEMA}}
         )
         
@@ -869,8 +870,8 @@ Format as a structured markdown document.""")
             response = self.client.chat_completion(
                 messages=messages,
                 model=self.model_config.plan_model,
-                temperature=0.1,
-                max_tokens=5000
+                temperature=self.config.temperature,
+                max_tokens=self.config.max_tokens_code
             )
             
             plan = self.client.get_completion_text(response)
@@ -900,8 +901,8 @@ Organize by priority and include dependencies where relevant.""")
             response = self.client.chat_completion(
                 messages=messages,
                 model=self.model_config.analysis_model,
-                temperature=0.3,
-                max_tokens=2000,
+                temperature=self.config.temperature,
+                max_tokens=self.config.max_tokens_analysis,
                 response_format={"type": "json_schema", "json_schema": {"name": "initial_tasks", "schema": INITIAL_TASKS_SCHEMA}}
             )
             

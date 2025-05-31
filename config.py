@@ -30,11 +30,11 @@ class RunConfig:
     max_runs: int = 10
     max_retries: int = 3
     timeout_seconds: int = 7200  # 2 hours
-    temperature: float = 0.7
-    max_tokens_code: int = 10000
-    max_tokens_summary: int = 3000
-    max_tokens_report: int = 10000
-    max_tokens_analysis: int = 12000
+    temperature: float = 0.3
+    max_tokens_code: int = 30000
+    max_tokens_summary: int = 5000
+    max_tokens_report: int = 30000
+    max_tokens_analysis: int = 30000
     
     def __post_init__(self):
         # Override with environment variables if present
