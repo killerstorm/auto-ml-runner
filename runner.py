@@ -1070,16 +1070,21 @@ Organize by priority and include dependencies where relevant.""")
             analysis_result = self.analyze_run_results(current_run, current_summary, code, success)
             log_success("Analyzed run results")
             
-            # Update tasks based on analysis
-            self.update_tasks_from_analysis(current_run, analysis_result, current_summary, self.read_file_safe(self.plan_file), code)
-            log_success("Updated task list")
-            
-            # Extract experiment state from analysis
             experiment_state = analysis_result.get('experiment_state', {
                 'experiment_complete': False,
                 'plan_revision_needed': False,
                 'early_exit_required': False
             })
+
+            if experiment_state.get('plan_revision_needed', False):
+                reason = analysis_result.get('reason', 'Plan needs adjustment based on findings')
+                log_info(f"Revising experimental plan: {reason}")
+                self.revise_plan(reason)
+                log_success("Revised experimental plan")
+
+            # Update tasks based on analysis
+            self.update_tasks_from_analysis(current_run, analysis_result, current_summary, self.read_file_safe(self.plan_file), code)
+            log_success("Updated task list")
             
             # Detect common issues
             detected_issues = self.detect_common_issues(current_run, output)
@@ -1105,10 +1110,6 @@ Organize by priority and include dependencies where relevant.""")
                 log_warning(f"Early exit required: {reason}", prefix="⚠️")
                 break
             
-            if experiment_state.get('plan_revision_needed', False):
-                reason = experiment_state.get('reason', 'Plan needs adjustment based on findings')
-                log_info(f"Revising experimental plan: {reason}")
-                self.revise_plan(reason)
             
             current_run += 1
         
