@@ -121,6 +121,15 @@ class TaskManager:
         task = self.update_task(task_id, status='completed', notes=notes)
         return task is not None
     
+    def remove_task(self, task_id: str) -> bool:
+        """Remove a task from the list."""
+        for i, task in enumerate(self.tasks):
+            if task.id == task_id:
+                self.tasks.pop(i)
+                self.save_tasks()
+                return True
+        return False
+    
     def to_markdown(self) -> str:
         """Export tasks as markdown for display."""
         md = "# Tasks\n\n"

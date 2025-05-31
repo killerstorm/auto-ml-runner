@@ -22,9 +22,35 @@ from console_utils import (
     log_progress, log_section, log_panel, log_status
 )
 from task_manager import TaskManager
-from schemas import LOG_SUMMARY_SCHEMA, ANALYSIS_AND_TASKS_SCHEMA, INITIAL_TASKS_SCHEMA
+from schemas import (
+    LOG_SUMMARY_SCHEMA, ANALYSIS_AND_TASKS_SCHEMA, 
+    INITIAL_TASKS_SCHEMA, ANALYSIS_ONLY_SCHEMA, TASK_UPDATES_SCHEMA
+)
 
 console = Console()
+
+# Add spinner wrapper for cleaner progress indication
+class Spinner:
+    """Context manager for progress spinners."""
+    def __init__(self, description: str):
+        self.description = description
+        self.progress = None
+        self.task = None
+    
+    def __enter__(self):
+        self.progress = Progress(
+            SpinnerColumn(),
+            TextColumn("[progress.description]{task.description}"),
+            console=console
+        )
+        self.progress.start()
+        self.task = self.progress.add_task(self.description, total=None)
+        return self
+    
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        if self.progress and self.task:
+            self.progress.remove_task(self.task)
+            self.progress.stop()
 
 SYSTEM_PROMPT_CONTEXT = "We are conducting automated ML experiments.\n "
 
@@ -604,27 +630,32 @@ Format as a structured markdown document.""")
         
         log_success(f"Revised experimental plan (archived old plan as {archive_path.name})")
     
-    def update_global_state(self, run_number: int, log_summary: str, code: str, success: bool):
-        """Analyze results and update tasks in a single LLM call."""
-        # Get current state
-        current_findings = self.read_file_safe(self.findings_file)
-        task_state = self.task_manager.get_structured_state()
-        plan = self.read_file_safe(self.plan_file)
-        
-        # Get code changes summary
-        previous_code = self.get_previous_code(run_number)
-        code_changes = get_code_changes(previous_code, code)
-        
-        # Create prompt for combined analysis
-        messages = [
-            Message("system", system_prompt("""an expert ML engineer analyzing experiment results. 
+    def analyze_run_results(self, run_number: int, log_summary: str, code: str, success: bool) -> Dict[str, any]:
+        """Analyze the results of a run and return analysis, findings, and experiment state."""
+        try:
+            with Spinner("Analyzing run results..."):
+                # Get current state
+                current_findings = self.read_file_safe(self.findings_file)
+                plan = self.read_file_safe(self.plan_file)
+                
+                # Get code changes summary
+                previous_code = self.get_previous_code(run_number)
+                code_changes = get_code_changes(previous_code, code)
+                
+                # Create analysis prompt
+                messages = [
+                    Message("system", system_prompt("""an expert ML engineer analyzing experiment results. 
 Provide a structured JSON response with:
 1. 'analysis': Your interpretation of the run results
-2. 'key_findings': Key discoveries from this run
-3. 'experiment_state': High-level experiment status flags
-4. 'task_updates': List of task updates based on the results""")),
+2. 'key_findings': Key discoveries from this run (if any)
+3. 'experiment_state': High-level experiment status flags""")),
 
-            Message("user", f"""Analyze the results from run {run_number} and update the experiment state.
+                    Message("user", f"""Analyze the results from run {run_number}.
+
+Experimental Plan:
+------
+{plan}
+------
 
 Code Changes Summary:
 {code_changes}
@@ -634,7 +665,102 @@ Code from Run {run_number}:
 {code}
 ------
 
+Recent Findings:
+------
+{restrict_text(current_findings, 10000, 1000, remove_middle=False) if current_findings else 'No previous findings'}
+------
+
 Log Summary from Run {run_number}:
+------
+{log_summary}
+------
+
+Analyze what happened and provide:
+1. A detailed analysis of the results
+2. Key findings (at most 5 bullet points)
+3. Experiment state flags:
+   - experiment_complete: Have we achieved the experimental goals?
+   - plan_revision_needed: Should we revise the experimental plan based on current progress?
+   - early_exit_required: Are there blockers preventing further progress?
+
+Note: Only signal `plan_revision_needed` if a substantial change is necessary.""")
+                ]
+                
+                response = self.client.chat_completion(
+                    messages=messages,
+                    model=self.model_config.analysis_model,
+                    temperature=self.config.temperature,
+                    max_tokens=self.config.max_tokens_analysis,
+                    response_format={"type": "json_schema", "json_schema": {"name": "analysis", "schema": ANALYSIS_ONLY_SCHEMA}}
+                )
+                
+                result = json.loads(self.client.get_completion_text(response))
+                
+                # Update KEY_FINDINGS.md with the analysis and key findings
+                timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                finding = f"\n\n## Run {run_number} - {timestamp}\n\n### Analysis\n{result['analysis']}\n\n### Key Findings\n"
+                for kf in result.get('key_findings', []):
+                    finding += f"- {kf}\n"
+                
+                with open(self.findings_file, "a") as f:
+                    f.write(finding)
+                
+                return result
+                
+        except Exception as e:
+            log_error(f"Failed to analyze run results: {e}")
+            # Fallback: save basic summary as finding
+            timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            finding = f"\n\n## Run {run_number} - {timestamp}\n\n### Log Summary\n{log_summary}\n"
+            with open(self.findings_file, "a") as f:
+                f.write(finding)
+            
+            # Return default analysis
+            return {
+                'analysis': f"Error analyzing run: {str(e)}",
+                'key_findings': ["Analysis failed - see log summary"],
+                'experiment_state': {
+                    'experiment_complete': False,
+                    'plan_revision_needed': False,
+                    'early_exit_required': False
+                }
+            }
+    
+    def update_tasks_from_analysis(self, run_number: int, analysis: Dict[str, any], log_summary: str, plan: str, code: str) -> None:
+        """Update tasks based on the analysis results."""
+        try:
+            with Spinner("Updating task list..."):
+                # Get current task state
+                task_state = self.task_manager.get_structured_state()
+                
+                # Create task update prompt
+                messages = [
+                    Message("system", system_prompt("""a task manager for ML experiments. 
+Based on the analysis of the latest run, determine what task updates are needed.""")),
+
+                    Message("user", f"""Based on the analysis of run {run_number}, update the task list.
+
+Experimental Plan:
+------
+{plan}
+------
+
+Code from Run {run_number}:
+------
+{code}
+------
+
+Analysis:
+------
+{analysis['analysis']}
+------
+
+Key Findings:
+------
+{json.dumps(analysis['key_findings'], indent=2)}
+------
+
+Log Summary:
 ------
 {log_summary}
 ------
@@ -642,92 +768,51 @@ Log Summary from Run {run_number}:
 Current Tasks (Total: {task_state['total_tasks']}, Pending: {task_state['pending']}, In Progress: {task_state['in_progress']}, Completed: {task_state['completed']}):
 {json.dumps(task_state['tasks'], indent=2)}
 
-Recent Findings:
-------
-{restrict_text(current_findings, 10000, 1000, remove_middle=False) if current_findings else 'No previous findings'}
-------
-
-Analyze what happened and provide:
-1. A detailed analysis of the results
-2. Key findings (max 5 bullet points)
-3. Experiment state flags:
-   - experiment_complete: Have we achieved the experimental goals?
-   - plan_revision_needed: Should we revise the experimental plan based on current progress?
-   - early_exit_required: Are there blockers preventing further progress?
-4. Task updates based on the results
-
-Note: Only signal `plan_revision_needed` if a substantial change is necessary. Otherwise, needed changes can
-be communicated through the list of tasks, key findings, and analysis.
-
-For task updates, you can:
-- Remove tasks that are no longer relevant
-- Mark tasks as complete (with notes)
+Determine task updates based on the analysis. You can:
+- Mark tasks as complete (with notes explaining what was accomplished)
 - Add new tasks discovered during the run
-- Update task status to blocked if there are dependencies""")
-        ]
-        
-        response = self.client.chat_completion(
-            messages=messages,
-            model=self.model_config.code_model,
-            temperature=self.config.temperature,
-            max_tokens=self.config.max_tokens_analysis,
-            response_format={"type": "json_schema", "json_schema": {"name": "analysis_tasks", "schema": ANALYSIS_AND_TASKS_SCHEMA}}
-        )
-        
-        try:
-            result = json.loads(self.client.get_completion_text(response))
-            
-            # Update KEY_FINDINGS.md with the analysis and key findings
-            timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-            finding = f"\n\n## Run {run_number} - {timestamp}\n\n### Analysis\n{result['analysis']}\n\n### Key Findings\n"
-            for kf in result.get('key_findings', []):
-                finding += f"- {kf}\n"
-            
-            with open(self.findings_file, "a") as f:
-                f.write(finding)
-            
-            # Process task updates
-            for update in result.get('task_updates', []):
-                action = update.get('action')
+- Update task status to blocked if there are dependencies
+- Remove tasks that are no longer relevant
+
+Focus on actionable tasks that will help achieve the experimental goals.""")
+                ]
                 
-                if action == 'complete':
-                    self.task_manager.mark_completed(
-                        update['task_id'], 
-                        notes=update.get('notes')
-                    )
-                elif action == 'add':
-                    self.task_manager.add_task(
-                        description=update['description'],
-                        priority=update.get('priority', 'medium')
-                    )
-                elif action == 'update':
-                    updates = {'status': update.get('new_status')}
-                    if 'notes' in update:
-                        updates['notes'] = update['notes']
-                    self.task_manager.update_task(update['task_id'], **updates)
-            
-            # Return experiment state flags
-            return result.get('experiment_state', {
-                'experiment_complete': False,
-                'plan_revision_needed': False,
-                'early_exit_required': False
-            })
-            
+                response = self.client.chat_completion(
+                    messages=messages,
+                    model=self.model_config.analysis_model,
+                    temperature=self.config.temperature,
+                    max_tokens=self.config.max_tokens_analysis,
+                    response_format={"type": "json_schema", "json_schema": {"name": "task_updates", "schema": TASK_UPDATES_SCHEMA}}
+                )
+                
+                result = json.loads(self.client.get_completion_text(response))
+                
+                # Process task updates
+                for update in result.get('task_updates', []):
+                    action = update.get('action')
+                    
+                    if action == 'complete':
+                        self.task_manager.mark_completed(
+                            update['task_id'], 
+                            notes=update.get('notes')
+                        )
+                    elif action == 'add':
+                        self.task_manager.add_task(
+                            description=update['description'],
+                            priority=update.get('priority', 'medium')
+                        )
+                    elif action == 'update':
+                        updates = {'status': update.get('new_status')}
+                        if 'notes' in update:
+                            updates['notes'] = update['notes']
+                        self.task_manager.update_task(update['task_id'], **updates)
+                    elif action == 'remove':
+                        # Actually remove the task to reduce clutter
+                        self.task_manager.remove_task(update['task_id'])
+                
         except Exception as e:
-            log_error(f"Failed to parse LLM response: {e}")
-            # Fallback: just save the summary as finding
-            timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-            finding = f"\n\n## Run {run_number} - {timestamp}\n\n### Log Summary\n{json.dumps(log_summary, indent=2)}\n"
-            with open(self.findings_file, "a") as f:
-                f.write(finding)
-            
-            # Return default state
-            return {
-                'experiment_complete': False,
-                'plan_revision_needed': False,
-                'early_exit_required': False
-            }
-    
+            log_error(f"Failed to update tasks: {e}")
+            # Continue without task updates
     
     def run_training(self, run_dir: Path, code: str) -> Tuple[bool, str]:
         """Execute the training code and capture output."""
@@ -954,26 +1039,13 @@ Organize by priority and include dependencies where relevant.""")
             # Summarize previous logs if available
             log_summary = None
             if previous_logs:
-                with Progress(
-                    SpinnerColumn(),
-                    TextColumn("[progress.description]{task.description}"),
-                    console=console
-                ) as progress:
-                    task = progress.add_task("Summarizing previous run...", total=None)
+                with Spinner("Summarizing previous run..."):
                     log_summary = self.get_or_create_log_summary(current_run - 1, previous_logs)
-                    progress.remove_task(task)
-                
                 log_success("Summarized previous run")
             
             # Generate code for this run
-            with Progress(
-                SpinnerColumn(),
-                TextColumn("[progress.description]{task.description}"),
-                console=console
-            ) as progress:
-                task = progress.add_task("Generating code...", total=None)
+            with Spinner("Generating code..."):
                 working_tasks, code = self.generate_code(current_run, previous_code, log_summary)
-                progress.remove_task(task)
             
             log_success("Generated new code")
             
@@ -996,18 +1068,23 @@ Organize by priority and include dependencies where relevant.""")
                 log_error("Training failed")
             
             # Summarize this run's results
-            with Progress(
-                SpinnerColumn(),
-                TextColumn("[progress.description]{task.description}"),
-                console=console
-            ) as progress:
-                task = progress.add_task("Analyzing results...", total=None)
+            with Spinner("Analyzing results..."):
                 current_summary = self.get_or_create_log_summary(current_run, output)
-                progress.remove_task(task)
             
-            # Update global state
-            experiment_state = self.update_global_state(current_run, current_summary, code, success)
-            log_success("Updated experiment state")
+            # Analyze run results and update tasks
+            analysis_result = self.analyze_run_results(current_run, current_summary, code, success)
+            log_success("Analyzed run results")
+            
+            # Update tasks based on analysis
+            self.update_tasks_from_analysis(current_run, analysis_result, current_summary, self.read_file_safe(self.plan_file), code)
+            log_success("Updated task list")
+            
+            # Extract experiment state from analysis
+            experiment_state = analysis_result.get('experiment_state', {
+                'experiment_complete': False,
+                'plan_revision_needed': False,
+                'early_exit_required': False
+            })
             
             # Detect common issues
             detected_issues = self.detect_common_issues(current_run, output)
@@ -1041,8 +1118,8 @@ Organize by priority and include dependencies where relevant.""")
             current_run += 1
         
         # Generate final report
-        log_progress("\nGenerating final report")
-        report = self.generate_final_report()
+        with Spinner("Generating final report..."):
+            report = self.generate_final_report()
         log_success("Generated REPORT.md")
         
         # Display summary
