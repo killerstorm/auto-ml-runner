@@ -29,28 +29,24 @@ from schemas import (
 
 console = Console()
 
-# Add spinner wrapper for cleaner progress indication
+# Simple wrapper using console.status for reliability
 class Spinner:
     """Context manager for progress spinners."""
     def __init__(self, description: str):
         self.description = description
-        self.progress = None
-        self.task = None
+        self.status = None
     
     def __enter__(self):
-        self.progress = Progress(
-            SpinnerColumn(),
-            TextColumn("[progress.description]{task.description}"),
-            console=console
-        )
-        self.progress.start()
-        self.task = self.progress.add_task(self.description, total=None)
+        self.status = console.status(self.description, spinner="dots")
+        self.status.start()
         return self
     
     def __exit__(self, exc_type, exc_val, exc_tb):
-        if self.progress and self.task:
-            self.progress.remove_task(self.task)
-            self.progress.stop()
+        if self.status:
+            try:
+                self.status.stop()
+            except:
+                pass
 
 SYSTEM_PROMPT_CONTEXT = "We are conducting automated ML experiments.\n "
 
