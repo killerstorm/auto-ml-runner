@@ -75,6 +75,64 @@ class OpenRouterClient:
         with open(log_path, 'w') as f:
             json.dump(log_entry, f, indent=2)
     
+    def _attempt_json_repair(self, content: str) -> Optional[str]:
+        """
+        Attempt to repair common JSON issues.
+        Returns repaired JSON string or None if repair failed.
+        """
+        if not content:
+            return None
+        
+        try:
+            # First, try to parse as-is
+            json.loads(content)
+            return content
+        except json.JSONDecodeError:
+            pass
+        
+        # Try common fixes
+        repaired = content
+        
+        # Fix missing closing braces/brackets at the end
+        open_braces = repaired.count('{') - repaired.count('}')
+        open_brackets = repaired.count('[') - repaired.count(']')
+        
+        if open_braces > 0:
+            repaired += '}' * open_braces
+        if open_brackets > 0:
+            repaired += ']' * open_brackets
+        
+        # Try to parse the repaired version
+        try:
+            json.loads(repaired)
+            return repaired
+        except json.JSONDecodeError:
+            pass
+        
+        # If content ends mid-string, try to close it
+        if repaired.rstrip().endswith('"') == False and '"' in repaired:
+            # Count quotes to see if we have an unclosed string
+            quote_count = repaired.count('"') - repaired.count('\\"')
+            if quote_count % 2 == 1:
+                repaired += '"'
+                
+                # Now add closing braces/brackets again
+                open_braces = repaired.count('{') - repaired.count('}')
+                open_brackets = repaired.count('[') - repaired.count(']')
+                
+                if open_braces > 0:
+                    repaired += '}' * open_braces
+                if open_brackets > 0:
+                    repaired += ']' * open_brackets
+                
+                try:
+                    json.loads(repaired)
+                    return repaired
+                except json.JSONDecodeError:
+                    pass
+        
+        return None
+    
     def chat_completion(
         self,
         messages: List[Union[Message, Dict[str, str]]],
@@ -110,6 +168,17 @@ class OpenRouterClient:
         
         # Track the original max_tokens for retries
         original_max_tokens = max_tokens
+        
+        # Set a reasonable default for JSON responses to prevent truncation
+        if response_format and response_format.get("type") in ["json_object", "json_schema"]:
+            if not max_tokens:
+                max_tokens = 4000  # Default for JSON responses
+                self._log_interaction(
+                    request_id,
+                    {"note": "Setting default max_tokens=4000 for JSON response"},
+                    None,
+                    None
+                )
         
         for attempt in range(self.max_retries):
             payload = {
@@ -163,31 +232,79 @@ class OpenRouterClient:
                         continue
                     raise Exception(error_msg)
                 
+                # Get finish reason for later use
+                finish_reason = response_data.get("choices", [{}])[0].get("finish_reason", "")
+                
                 # Check if JSON parsing is needed and valid
                 if response_format and response_format.get("type") in ["json_object", "json_schema"]:
                     try:
                         json.loads(content)
                     except json.JSONDecodeError as e:
+                        # First, try to repair the JSON
+                        repaired_content = self._attempt_json_repair(content)
+                        if repaired_content:
+                            # Update the response with repaired content
+                            response_data["choices"][0]["message"]["content"] = repaired_content
+                            self._log_interaction(
+                                request_id,
+                                request_data,
+                                response_data,
+                                error=f"JSON repaired successfully (original error: {str(e)})"
+                            )
+                            return response_data
+                        
                         error_msg = f"Invalid JSON in response: {str(e)}"
                         self._log_interaction(request_id, request_data, response_data, error=error_msg)
+                        
                         if attempt < self.max_retries - 1:
+                            # Check if this might be a truncation issue
+                            error_str = str(e).lower()
+                            is_truncation = any(term in error_str for term in [
+                                "unterminated string",
+                                "expecting value",
+                                "unexpected end",
+                                "expecting property name",
+                                "expecting ',' delimiter"
+                            ])
+                            
+                            # Also check if finish_reason suggests truncation
+                            is_length_issue = finish_reason == "length" or (
+                                is_truncation and content.rstrip()[-1] not in ['}', ']']
+                            )
+                            
+                            if is_length_issue:
+                                # Increase max_tokens for likely truncation issues
+                                if max_tokens:
+                                    max_tokens = int(max_tokens * 1.5)
+                                else:
+                                    # If no max_tokens was set, start with a reasonable default
+                                    max_tokens = 4000
+                                
+                                self._log_interaction(
+                                    request_id,
+                                    request_data,
+                                    response_data,
+                                    error=f"JSON likely truncated, retrying with max_tokens={max_tokens}"
+                                )
+                            
                             time.sleep(2 ** attempt)  # Exponential backoff
                             continue
                         raise Exception(error_msg)
                 
-                # Check if stopped due to length limit
-                finish_reason = response_data.get("choices", [{}])[0].get("finish_reason", "")
+                # Check if stopped due to length limit (non-JSON responses)
                 if finish_reason == "length" and max_tokens and attempt < self.max_retries - 1:
-                    # Retry with 50% more tokens
-                    max_tokens = int(max_tokens * 1.5)
-                    self._log_interaction(
-                        request_id, 
-                        request_data, 
-                        response_data, 
-                        error=f"Hit length limit, retrying with max_tokens={max_tokens}"
-                    )
-                    time.sleep(1)  # Brief pause before retry
-                    continue
+                    # Skip if we already handled this in JSON parsing above
+                    if not (response_format and response_format.get("type") in ["json_object", "json_schema"]):
+                        # Retry with 50% more tokens
+                        max_tokens = int(max_tokens * 1.5)
+                        self._log_interaction(
+                            request_id, 
+                            request_data, 
+                            response_data, 
+                            error=f"Hit length limit, retrying with max_tokens={max_tokens}"
+                        )
+                        time.sleep(1)  # Brief pause before retry
+                        continue
                 
                 # Log successful interaction
                 self._log_interaction(request_id, request_data, response_data)
