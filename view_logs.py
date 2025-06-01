@@ -19,6 +19,7 @@ from rich.prompt import Prompt, Confirm
 from rich.columns import Columns
 from rich.tree import Tree
 from collections import defaultdict
+import readchar
 import time
 
 console = Console()
@@ -173,31 +174,35 @@ class LogViewer:
         stats = self.get_summary_stats()
         
         # Create summary table
-        table = Table(title="Summary Statistics", show_header=False)
-        table.add_column("Metric", style="cyan")
-        table.add_column("Value", style="white")
+        table1 = Table(title="Summary Statistics", show_header=False)
+        table1.add_column("Metric", style="cyan")
+        table1.add_column("Value", style="white")
         
-        table.add_row("Total Entries", str(stats["total"]))
-        table.add_row("Successful", f"{stats['success']} ({stats['success']/max(stats['total'], 1)*100:.1f}%)")
-        table.add_row("Errors", f"{stats['errors']} ({stats['errors']/max(stats['total'], 1)*100:.1f}%)")
-        table.add_row("Total Tokens", f"{stats['total_tokens']:,}")
-        table.add_row("Total Duration", f"{stats['total_duration_ms']/1000:.1f}s")
+        table1.add_row("Total Entries", str(stats["total"]))
+        table1.add_row("Successful", f"{stats['success']} ({stats['success']/max(stats['total'], 1)*100:.1f}%)")
+        table1.add_row("Errors", f"{stats['errors']} ({stats['errors']/max(stats['total'], 1)*100:.1f}%)")
+        table1.add_row("Total Tokens", f"{stats['total_tokens']:,}")
+        table1.add_row("Total Duration", f"{stats['total_duration_ms']/1000:.1f}s")
         
+        table2 = Table(title="Summary Statistics", show_header=False)
+        table2.add_column("Metric", style="cyan")
+        table2.add_column("Value", style="white")
+
         # Add function breakdown
         if stats["by_function"]:
-            table.add_row("", "")  # Empty row
-            table.add_row("[bold]By Function[/bold]", "")
+            table2.add_row("", "")  # Empty row
+            table2.add_row("[bold]By Function[/bold]", "")
             for func, count in sorted(stats["by_function"].items(), key=lambda x: x[1], reverse=True)[:5]:
-                table.add_row(f"  {func}", str(count))
+                table2.add_row(f"  {func}", str(count))
         
         # Add model breakdown
         if stats["by_model"]:
-            table.add_row("", "")  # Empty row
-            table.add_row("[bold]By Model[/bold]", "")
+            table2.add_row("", "")  # Empty row
+            table2.add_row("[bold]By Model[/bold]", "")
             for model, count in sorted(stats["by_model"].items(), key=lambda x: x[1], reverse=True):
-                table.add_row(f"  {model.split('/')[-1]}", str(count))
+                table2.add_row(f"  {model.split('/')[-1]}", str(count))
         
-        return Panel(table, title="📊 Statistics", border_style="blue")
+        return Panel(Columns([table1, table2]), title="📊 Statistics", border_style="blue")
     
     def render_log_entry(self, log: LogEntry) -> Panel:
         """Render a single log entry."""
@@ -442,7 +447,7 @@ class LogViewer:
             console.print(f"\n[dim]Use arrow keys to navigate, 'h' for help, 'q' to quit[/dim]")
             
             # Get user input
-            key = console.input()
+            key = readchar.readkey()
             
             if key.lower() == 'q':
                 break
