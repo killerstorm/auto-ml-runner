@@ -1189,12 +1189,7 @@ This log tracks the progress, findings, and insights from each experimental run.
             # Update tasks based on analysis
             self.update_tasks_from_analysis(current_run, analysis_result, current_summary, self.read_file_safe(self.plan_file), code)
             log_success("Updated task list")
-            
-            # Detect common issues
-            detected_issues = self.detect_common_issues(current_run, output)
-            if detected_issues:
-                log_warning(f"Potential issues detected:\n{detected_issues}", prefix="⚠️")
-            
+
             # Show progress summary
             task_summary = self.task_manager.get_structured_state()
             progress_msg = f"Progress: Run {current_run}/{self.config.max_runs} | "
