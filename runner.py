@@ -1080,7 +1080,7 @@ Respond with a JSON object containing 'tasks' array, where each task has:
                 messages=messages,
                 model=self.model_config.analysis_model,
                 temperature=self.config.temperature,
-                response_format={"type": "json_object", "json_schema": {"name": "task_updates", "schema": INITIAL_TASKS_SCHEMA}},
+                response_format={"type": "json_schema", "json_schema": {"name": "tasks", "schema": INITIAL_TASKS_SCHEMA}},
                 context=context
             )
             
