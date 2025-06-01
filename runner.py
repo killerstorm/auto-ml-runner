@@ -259,7 +259,7 @@ class ExperimentRunner:
         # Initialize state files
         self.plan_file = self.experiment_dir / "PLAN.md"
         self.tasks_file = self.experiment_dir / "tasks.json"
-        self.findings_file = self.experiment_dir / "KEY_FINDINGS.md"
+        self.findings_file = self.experiment_dir / "EXPERIMENT_LOG.md"
         self.idea_file = self.experiment_dir / "IDEA.md"
         
         # Initialize task manager
@@ -572,7 +572,7 @@ Current Plan:
 {current_plan}
 ------
 
-Key Findings So Far:
+Experiment log / key findings:
 ------
 {findings}
 ------
@@ -590,10 +590,7 @@ Create a revised plan that:
 3. Adjusts methodology based on findings
 4. Updates milestones and success criteria as needed
 5. Addresses any blockers or challenges discovered
-6. Updates file management strategy if needed:
-   - Any new shared data/models should reference the ../shared_files/ directory
-   - Specify relative paths for any files discovered during experiments
-7. Considers the current environment and available packages
+6. Considers the current environment and available packages
 
 Format as a structured markdown document.""")
         ]
@@ -660,7 +657,7 @@ Code from Run {run_number}:
 {code}
 ------
 
-Recent Findings:
+Data about previous runs:
 ------
 {restrict_text(current_findings, 50000, 2000, remove_middle=False) if current_findings else 'No previous findings'}
 ------
@@ -671,14 +668,20 @@ Log Summary from Run {run_number}:
 ------
 
 Analyze what happened and provide:
-1. A detailed analysis of the results
-2. Key findings (at most 5 bullet points)
+1. Analysis of the results from current run 
+2. Key findings - at most 5 bullet points
 3. Experiment state flags:
    - experiment_complete: Have we achieved the experimental goals?
    - plan_revision_needed: Should we revise the experimental plan based on current progress?
    - early_exit_required: Are there blockers preventing further progress?
 
-Note: Only signal `plan_revision_needed` if a substantial change is necessary.""")
+Note: set `plan_revision_needed` to `false` if analysis already contains enough information to take a corrective action or improve results.
+It should be signalled only if a signficiant correction is necessary.
+
+Note: do not set `early_exit_required` to `true` if there's a possibility to fix the issue with a plan revision,
+using some workaround, etc.
+
+""")
                 ]
                 
                 response = self.client.chat_completion(
@@ -691,7 +694,7 @@ Note: Only signal `plan_revision_needed` if a substantial change is necessary.""
                 
                 result = json.loads(self.client.get_completion_text(response))
                 
-                # Update KEY_FINDINGS.md with the analysis and key findings
+                # Update EXPERIMENT_LOG.md with the analysis and key findings
                 timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                 finding = f"\n\n## Run {run_number} - {timestamp}\n\n### Analysis\n{result['analysis']}\n\n### Key Findings\n"
                 for kf in result.get('key_findings', []):
@@ -945,17 +948,20 @@ Environment Information:
 {env_summary}
 
 The plan should include:
+0. All the relevant information from the idea document
 1. Clear objectives and success criteria
 2. Technical approach and methodology
 3. Key milestones and checkpoints
 4. Potential challenges and mitigation strategies
 5. Expected outcomes
-6. File management strategy (if applicable):
-   - It might be unnecessary to manage any files explicitly
-   - Any shared data/models should reference the ../shared_files/ directory
-   - Specify relative paths for any files mentioned in the idea
-   - Note which files need to persist across runs
-   - Note that some frameworks might cache files transparently, that makes things easier
+6. File management strategy:
+   - Prefer relying on transparent file caching mechanisms provided by libraries such as datasets, transformers, etc.
+   - Prefer streaming option, if possible. The file system available to the experiment is limited.
+   - If the idea document mentions specific files, make sure to reference them in the plan. 
+     If path is not absolute, make it relative to the run directory (i.e. some_file.txt -> ../some_file.txt)
+   - If it's absolutely necessary to share files between runs, use the ../shared_files/ directory
+     In that case you need to clearly specify that code must check for the existence of the file and create it if it doesn't exist.
+
 
 Important: 
 - Do not include too many details, as the plan would be executed by a model which is as smart as you are
@@ -1024,10 +1030,10 @@ Organize by priority and include dependencies where relevant.""")
                     priority="high"
                 )
         
-        # Initialize KEY_FINDINGS.md if it doesn't exist
+        # Initialize EXPERIMENT_LOG.md if it doesn't exist
         if not self.findings_file.exists():
-            self.findings_file.write_text("# Key Findings\n\nThis document tracks important discoveries and results from each run.\n")
-            log_success("Initialized KEY_FINDINGS.md")
+            self.findings_file.write_text("# Experiment log\n\nThis document tracks the course of the experiment, including discoveries and results from each run.\n")
+            log_success("Initialized EXPERIMENT_LOG.md")
     
     def run_experiment(self):
         """Run the main experiment loop."""
