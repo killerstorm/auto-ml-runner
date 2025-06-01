@@ -675,12 +675,15 @@ Analyze what happened and provide:
    - plan_revision_needed: Should we revise the experimental plan based on current progress?
    - early_exit_required: Are there blockers preventing further progress?
 
-Note: set `plan_revision_needed` to `false` if analysis already contains enough information to take a corrective action or improve results.
-It should be signalled only if a signficiant correction is necessary.
-
-Note: do not set `early_exit_required` to `true` if there's a possibility to fix the issue with a plan revision,
-using some workaround, etc.
-
+Note:
+    * We do not expect each run to be successful, as code written by your fellow AI might contain bugs, errors, etc.
+      With simple bugs it is sufficient to document them in `analysis` section so they can be fixed the code generated on the next run.
+      However, if there's more complex issue, you might suggest a workaround or a plan revision. It is entirely acceptable to
+      dedicate a "run" to investigation/debugging - printing out all relevant information, etc.
+    * Set `plan_revision_needed` to `false` if analysis already contains enough information to take a corrective action or improve results.
+      It should set to `true` only if a signficiant correction is necessary.
+    * Do not set `early_exit_required` to `true` if there's a possibility to fix the issue with a plan revision,
+      using some workaround, etc.
 """)
                 ]
                 
@@ -952,7 +955,7 @@ The plan should include:
 1. Clear objectives and success criteria
 2. Technical approach and methodology
 3. Key milestones and checkpoints
-4. Potential challenges and mitigation strategies
+4. Potential challenges and mitigation strategies (if any)
 5. Expected outcomes
 6. File management strategy:
    - Prefer relying on transparent file caching mechanisms provided by libraries such as datasets, transformers, etc.
@@ -1099,12 +1102,17 @@ Organize by priority and include dependencies where relevant.""")
                 'plan_revision_needed': False,
                 'early_exit_required': False
             })
+            
+            if experiment_state.get('early_exit_required', False):
+                reason = experiment_state.get('reason', 'Cannot make further progress')
+                log_warning(f"Early exit required: {reason}", prefix="⚠️")
+                break
+
 
             if experiment_state.get('plan_revision_needed', False):
                 reason = analysis_result.get('reason', 'Plan needs adjustment based on findings')
                 log_info(f"Revising experimental plan: {reason}")
                 self.revise_plan(reason)
-                log_success("Revised experimental plan")
 
             # Update tasks based on analysis
             self.update_tasks_from_analysis(current_run, analysis_result, current_summary, self.read_file_safe(self.plan_file), code)
@@ -1127,13 +1135,7 @@ Organize by priority and include dependencies where relevant.""")
             if experiment_state.get('experiment_complete', False):
                 reason = experiment_state.get('reason', 'Experimental goals achieved')
                 log_success(f"Experiment complete: {reason}", prefix="🎯")
-                break
-            
-            if experiment_state.get('early_exit_required', False):
-                reason = experiment_state.get('reason', 'Cannot make further progress')
-                log_warning(f"Early exit required: {reason}", prefix="⚠️")
-                break
-            
+                break            
             
             current_run += 1
         
