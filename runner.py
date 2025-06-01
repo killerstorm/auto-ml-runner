@@ -662,7 +662,7 @@ Code from Run {run_number}:
 
 Recent Findings:
 ------
-{restrict_text(current_findings, 10000, 1000, remove_middle=False) if current_findings else 'No previous findings'}
+{restrict_text(current_findings, 50000, 2000, remove_middle=False) if current_findings else 'No previous findings'}
 ------
 
 Log Summary from Run {run_number}:
@@ -812,7 +812,8 @@ Focus on actionable tasks that will help achieve the experimental goals.""")
     def run_training(self, run_dir: Path, code: str) -> Tuple[bool, str]:
         """Execute the training code and capture output."""
         code_file = run_dir / "main.py"
-        log_file = run_dir / "output.log"
+        stdout_file = run_dir / "stdout.txt"
+        stderr_file = run_dir / "stderr.txt"
         
         # Write code to file
         code_file.write_text(code)
@@ -821,16 +822,25 @@ Focus on actionable tasks that will help achieve the experimental goals.""")
         log_progress(f"Running training script in {run_dir}")
         
         try:
-            result = subprocess.run(
-                [sys.executable, "main.py"],
-                cwd=run_dir,
-                capture_output=True,
-                text=True,
-                timeout=self.config.timeout_seconds
-            )
+            with open(stdout_file, 'w') as out, open(stderr_file, 'w') as err:
+                result = subprocess.run(
+                    [sys.executable, "main.py"],
+                    cwd=run_dir,
+                    stdout=out,
+                    stderr=err,
+                    text=True,
+                    timeout=self.config.timeout_seconds
+                )
             
-            # Combine stdout and stderr
-            output = f"STDOUT:\n{result.stdout}\n\nSTDERR:\n{result.stderr}"
+            # Read the output files
+            stdout_content = stdout_file.read_text() if stdout_file.exists() else ""
+            stderr_content = stderr_file.read_text() if stderr_file.exists() else ""
+            
+            # Combine for return value (to maintain compatibility)
+            output = f"STDOUT:\n{stdout_content}\n\nSTDERR:\n{stderr_content}"
+            
+            # Also write combined output to output.log for backward compatibility
+            log_file = run_dir / "output.log"
             log_file.write_text(output)
             
             success = result.returncode == 0
@@ -838,10 +848,18 @@ Focus on actionable tasks that will help achieve the experimental goals.""")
             
         except subprocess.TimeoutExpired:
             error_msg = f"Training script timed out after {self.config.timeout_seconds} seconds"
+            # Write timeout message to stderr file
+            stderr_file.write_text(error_msg)
+            # Also write to output.log for backward compatibility
+            log_file = run_dir / "output.log"
             log_file.write_text(error_msg)
             return False, error_msg
         except Exception as e:
             error_msg = f"Error running training script: {str(e)}"
+            # Write error to stderr file
+            stderr_file.write_text(error_msg)
+            # Also write to output.log for backward compatibility
+            log_file = run_dir / "output.log"
             log_file.write_text(error_msg)
             return False, error_msg
     
