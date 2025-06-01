@@ -11,11 +11,9 @@ from typing import Dict, List, Optional, Tuple
 import json
 import click
 from rich.console import Console
-from rich.progress import Progress, SpinnerColumn, TextColumn
-from rich.panel import Panel
 from rich.markdown import Markdown
 
-from llm_client import OpenRouterClient, Message
+from llm_client import OpenRouterClient, Message, CallContext
 from config import ModelConfig, RunConfig, LoggingConfig
 from console_utils import (
     log_info, log_success, log_error, log_warning, 
@@ -240,14 +238,25 @@ class ExperimentRunner:
         self.experiment_dir = experiment_dir
         self.config = config
         self.model_config = model_config
+        
+        # Generate a unique experiment ID
+        self.experiment_id = f"exp_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{experiment_dir.name}"
+        
         log_config = LoggingConfig()
-        if log_config.enable_logging: 
+        if log_config.enable_logging:
             log_dir = Path(log_config.log_dir)
             if not log_dir.is_absolute():
                 log_dir = self.experiment_dir / log_dir
-            self.client = OpenRouterClient(log_dir=log_dir, max_retries=self.config.max_retries)
+            self.client = OpenRouterClient(
+                log_dir=log_dir, 
+                max_retries=self.config.max_retries,
+                experiment_id=self.experiment_id
+            )
         else:
-            self.client = OpenRouterClient(max_retries=self.config.max_retries)
+            self.client = OpenRouterClient(
+                max_retries=self.config.max_retries,
+                experiment_id=self.experiment_id
+            )
         
         # Create experiment directory if it doesn't exist
         self.experiment_dir.mkdir(exist_ok=True)
@@ -305,17 +314,23 @@ class ExperimentRunner:
         else:
             return self.get_previous_code(run_number - 1)
     
-    def get_previous_logs(self, run_number: int) -> Optional[str]:
+    def get_logs(self, run_number: int) -> Optional[str]:
         """Get the logs from the previous run."""
         if run_number <= 1:
             return None
         
-        prev_run_dir = self.experiment_dir / f"run_{run_number - 1}"
-        prev_log_file = prev_run_dir / "output.log"
+        prev_run_dir = self.experiment_dir / f"run_{run_number}"
+        stdout_file = prev_run_dir / "stdout.txt"
+        stderr_file = prev_run_dir / "stderr.txt"
         
-        if prev_log_file.exists():
-            return prev_log_file.read_text()
-        return None
+        # Read both stdout and stderr if they exist
+        stdout_content = stdout_file.read_text() if stdout_file.exists() else ""
+        stderr_content = stderr_file.read_text() if stderr_file.exists() else ""
+        
+        if stdout_content or stderr_content:
+            return f"STDOUT:\n{stdout_content}\n\nSTDERR:\n{stderr_content}"
+        else:
+            return ""
     
     def get_or_create_log_summary(self, run_number: int, logs: Optional[str] = None) -> Optional[str]:
         """Get existing log summary or create a new one if needed.
@@ -334,12 +349,9 @@ class ExperimentRunner:
         if summary_file.exists():
             return summary_file.read_text()
         
-        # If no logs provided, try to read from log file
+        # If no logs provided, try to read from stdout and stderr files
         if logs is None:
-            log_file = run_dir / "output.log"
-            if not log_file.exists():
-                return None
-            logs = log_file.read_text()
+            logs = self.get_logs(run_number)
         
         # Generate new summary
         summary = self.summarize_logs(logs, run_number)
@@ -351,42 +363,20 @@ class ExperimentRunner:
     
     def summarize_logs(self, logs: str, run_number: int) -> str:
         """Use LLM to create a mechanical summary of the logs."""
-        # Check if logs are empty or contain only whitespace
-        if not logs or not logs.strip():
-            return f"Run {run_number}: No output generated (empty logs)"
         
-        # First extract key information
-        key_info = extract_key_log_info(logs)
-        
-        # Build a structured summary of extracted info
-        extracted_summary = ""
-        if key_info['errors']:
-            extracted_summary += "ERRORS FOUND:\n"
-            for error in key_info['errors'][:3]:  # Limit to first 3 errors
-                extracted_summary += f"{error}\n\n"
-        
-        if key_info['final_metrics']:
-            extracted_summary += "FINAL METRICS:\n"
-            for metric in key_info['final_metrics'][-5:]:  # Last 5 metrics
-                extracted_summary += f"{metric}\n"
-            extracted_summary += "\n"
-        
-        if key_info['gpu_memory']:
-            extracted_summary += "GPU MEMORY:\n"
-            for mem in key_info['gpu_memory'][-3:]:  # Last 3 GPU memory reports
-                extracted_summary += f"{mem}\n"
-            extracted_summary += "\n"
-        
-        # Then truncate the full logs
-        rlogs = restrict_text(logs, 50000, 1000, remove_middle=True)
+        # Restrict logs to reasonable size
+        rlogs = restrict_text(logs, 1500000, 15000)
         
         messages = [
-            Message("system", system_prompt("""to extract and copy important information from training logs.
-Do NOT interpret or analyze - just extract factual information.
-Focus on: final metrics, errors, warnings, GPU usage, and important output lines.""")),
-            Message("user", f"""Extract key information from these training logs:
-
-{extracted_summary}
+            Message("system", system_prompt("""an assistant extracting key information from ML experiment logs.
+Focus on:
+- Errors and warnings
+- Training metrics (loss, accuracy, etc.)
+- Completion status
+- Hardware utilization
+- Any anomalies or issues""")),
+            
+            Message("user", f"""Summarize the key information from run {run_number} logs.
 
 FULL LOGS (truncated):
 ------
@@ -394,14 +384,29 @@ FULL LOGS (truncated):
 ------
 
 Extract and copy important information from training logs.
-Do NOT interpret or analyze - just extract factual information.""")
+Do NOT interpret or analyze - just extract factual information.
+
+These warnings are know to be irrelevant: and should be ignored:
+"Unable to register cuFFT factory"
+"computation_placer.cc"
+"cpu_feature_guard.cc"
+
+""")
         ]
+        
+        # Create context for this call
+        context = CallContext(
+            function_name="summarize_logs",
+            run_number=run_number,
+            experiment_id=self.experiment_id
+        )
         
         response = self.client.chat_completion(
             messages=messages,
             model=self.model_config.summarize_model,
             temperature=0.1,  # Low temperature for factual extraction
-            max_tokens=self.config.max_tokens_summary
+            max_tokens=self.config.max_tokens_summary,
+            context=context
         )
         
         return self.client.get_completion_text(response)
@@ -428,24 +433,21 @@ Environment:
         
         user_prompt = f"""Generate the complete {main_py} code for run {run_number}.
 
+{env_context}
+
 Important guidelines:
 - Generate a complete, self-contained {main_py} file, not patches or fragments
-- Always use fp32 by default to avoid NaN issues
-- Logs can be written to standard out and standard error, which will be captured by the experiment runner for further analysis
-- Print as much information as possible in the early runs or after we encounter an error; this information can be used to diagnose the issue
-- It is permissible to include code needed only for debugging
+- Write all information to standard out and standard error, which will be captured by the experiment runner for further analysis
+  * Specifically write anything that might be useful - intermediate results, sizes, sampled data, etc.
 - Do not make progress bars (tqdm, etc)
-- Do not create any files unless it's necessary according to the plan
+- Do not create any files unless it's necessary according to the plan. Data in files won't be analyzed. Focus all your effort on standard out and standard error.
 - Make incremental improvements based on previous results
 - Focus on achieving the experimental goals
 - Consider the available hardware and installed packages
 
 File Management:
 - You can access files from the previous run using relative paths: ../run_{run_number - 1}/filename
-- Shared persistent files (datasets, pretrained models, etc.) should be accessed from: ../shared_files/
 - If your code produces files needed by future runs (e.g., model checkpoints), save them in the current directory
-- If you need to share immutable reference data across all runs, copy it to ../shared_files/
-- The plan will specify file paths relative to the run directory when files are needed
 
 General Plan:
 {plan}
@@ -494,11 +496,19 @@ Then provide the Python code wrapped in ```python...```, no other explanations."
             Message("user", user_prompt)
         ]
         
+        # Create context for this call
+        context = CallContext(
+            function_name="generate_code",
+            run_number=run_number,
+            experiment_id=self.experiment_id
+        )
+        
         response = self.client.chat_completion(
             messages=messages,
             model=self.model_config.code_model,
             temperature=self.config.temperature,
-            max_tokens=self.config.max_tokens_code
+            max_tokens=self.config.max_tokens_code,
+            context=context
         )
         
         full_response = self.client.get_completion_text(response).strip()
@@ -590,17 +600,25 @@ Create a revised plan that:
 2. Incorporates lessons learned
 3. Adjusts methodology based on findings
 4. Updates milestones and success criteria as needed
-5. Addresses any blockers or challenges discovered
+5. Addresses any blockers or challenges discovered - consider workarounds
 6. Considers the current environment and available packages
 
 Format as a structured markdown document.""")
         ]
         
+        # Create context for this call - note we don't have run_number here
+        context = CallContext(
+            function_name="revise_plan",
+            experiment_id=self.experiment_id,
+            additional_context={"reason": reason}
+        )
+        
         response = self.client.chat_completion(
             messages=messages,
             model=self.model_config.plan_model,
             temperature=self.config.temperature,
-            max_tokens=self.config.max_tokens_code
+            max_tokens=self.config.max_tokens_code,
+            context=context
         )
         
         revised_plan = self.client.get_completion_text(response)
@@ -658,7 +676,7 @@ Code from Run {run_number}:
 {code}
 ------
 
-Data about previous runs:
+Analysis of previous runs, findings, etc:
 ------
 {restrict_text(current_findings, 50000, 2000, remove_middle=False) if current_findings else 'No previous findings'}
 ------
@@ -688,12 +706,21 @@ Note:
 """)
                 ]
                 
+                # Create context for this call
+                context = CallContext(
+                    function_name="analyze_run_results",
+                    run_number=run_number,
+                    experiment_id=self.experiment_id,
+                    additional_context={"success": success}
+                )
+                
                 response = self.client.chat_completion(
                     messages=messages,
                     model=self.model_config.analysis_model,
                     temperature=self.config.temperature,
                     max_tokens=self.config.max_tokens_analysis,
-                    response_format={"type": "json_schema", "json_schema": {"name": "analysis", "schema": ANALYSIS_ONLY_SCHEMA}}
+                    response_format={"type": "json_schema", "json_schema": {"name": "analysis", "schema": ANALYSIS_ONLY_SCHEMA}},
+                    context=context
                 )
                 
                 result = json.loads(self.client.get_completion_text(response))
@@ -779,12 +806,20 @@ Determine task updates based on the analysis. You can:
 Focus on actionable tasks that will help achieve the experimental goals.""")
                 ]
                 
+                # Create context for this call
+                context = CallContext(
+                    function_name="update_tasks_from_analysis",
+                    run_number=run_number,
+                    experiment_id=self.experiment_id
+                )
+                
                 response = self.client.chat_completion(
                     messages=messages,
                     model=self.model_config.analysis_model,
                     temperature=self.config.temperature,
                     max_tokens=self.config.max_tokens_analysis,
-                    response_format={"type": "json_schema", "json_schema": {"name": "task_updates", "schema": TASK_UPDATES_SCHEMA}}
+                    response_format={"type": "json_schema", "json_schema": {"name": "task_updates", "schema": TASK_UPDATES_SCHEMA}},
+                    context=context
                 )
                 
                 result = json.loads(self.client.get_completion_text(response))
@@ -843,32 +878,39 @@ Focus on actionable tasks that will help achieve the experimental goals.""")
             stdout_content = stdout_file.read_text() if stdout_file.exists() else ""
             stderr_content = stderr_file.read_text() if stderr_file.exists() else ""
             
-            # Combine for return value (to maintain compatibility)
+            # Combine for return value
             output = f"STDOUT:\n{stdout_content}\n\nSTDERR:\n{stderr_content}"
-            
-            # Also write combined output to output.log for backward compatibility
-            log_file = run_dir / "output.log"
-            log_file.write_text(output)
             
             success = result.returncode == 0
             return success, output
             
         except subprocess.TimeoutExpired:
-            error_msg = f"Training script timed out after {self.config.timeout_seconds} seconds"
-            # Write timeout message to stderr file
-            stderr_file.write_text(error_msg)
-            # Also write to output.log for backward compatibility
-            log_file = run_dir / "output.log"
-            log_file.write_text(error_msg)
-            return False, error_msg
+            # Read any partial output that was written before timeout
+            stdout_content = stdout_file.read_text() if stdout_file.exists() else ""
+            stderr_content = stderr_file.read_text() if stderr_file.exists() else ""
+            
+            # Append timeout message to stderr
+            timeout_msg = f"\n\n[TIMEOUT] Training script timed out after {self.config.timeout_seconds} seconds\n"
+            with open(stderr_file, 'a') as err:
+                err.write(timeout_msg)
+            
+            # Combine output including the timeout message
+            output = f"STDOUT:\n{stdout_content}\n\nSTDERR:\n{stderr_content}{timeout_msg}"
+            return False, output
+            
         except Exception as e:
-            error_msg = f"Error running training script: {str(e)}"
-            # Write error to stderr file
-            stderr_file.write_text(error_msg)
-            # Also write to output.log for backward compatibility
-            log_file = run_dir / "output.log"
-            log_file.write_text(error_msg)
-            return False, error_msg
+            # Read any partial output
+            stdout_content = stdout_file.read_text() if stdout_file.exists() else ""
+            stderr_content = stderr_file.read_text() if stderr_file.exists() else ""
+            
+            # Append error message to stderr
+            error_msg = f"\n\n[ERROR] Error running training script: {str(e)}\n"
+            with open(stderr_file, 'a') as err:
+                err.write(error_msg)
+            
+            # Combine output including the error message
+            output = f"STDOUT:\n{stdout_content}\n\nSTDERR:\n{stderr_content}{error_msg}"
+            return False, output
     
     def generate_final_report(self):
         """Generate a final report summarizing the entire experiment."""
@@ -898,11 +940,18 @@ Create a well-structured report that includes:
 6. Recommendations for Future Work""")
         ]
         
+        # Create context for this call
+        context = CallContext(
+            function_name="generate_final_report",
+            experiment_id=self.experiment_id
+        )
+        
         response = self.client.chat_completion(
             messages=messages,
             model=self.model_config.report_model,
             temperature=0.5,
-            max_tokens=self.config.max_tokens_report
+            max_tokens=self.config.max_tokens_report,
+            context=context
         )
         
         report = self.client.get_completion_text(response)
@@ -919,125 +968,147 @@ Create a well-structured report that includes:
         
         idea = self.idea_file.read_text()
         
-        # Generate initial plan if it doesn't exist
-        if not self.plan_file.exists():
-            log_progress("Generating initial experiment plan")
-            
-            # Get environment information
-            env_info = get_environment_info()
-            env_summary = f"""
+        # Get environment information
+        env_info = get_environment_info()
+        env_summary = f"""
 Environment Information:
 - Python: {env_info['python_version'].split()[0]}
 - Platform: {env_info['platform']}
 - PyTorch: {env_info['torch_version'] or 'Not installed'}
 - GPU: {'Available' if env_info['gpu_available'] else 'Not available'}
 """
-            if env_info['gpu_info']:
-                gpu = env_info['gpu_info']
-                env_summary += f"  - {gpu['name']} ({gpu['memory_gb']:.1f}GB, Compute {gpu['compute_capability']})\n"
-            
-            if env_info['installed_packages']:
-                env_summary += "\nKey Installed Packages:\n"
-                for pkg in sorted(env_info['installed_packages'])[:20]:  # Show top 20 packages
-                    env_summary += f"  - {pkg}\n"
-            
-            messages = [
-                Message("system", system_prompt("""an expert ML researcher creating detailed experimental plans""")),
-                Message("user", f"""Based on this idea, create a detailed experimental plan:
-
-------
+        if env_info['gpu_info']:
+            gpu = env_info['gpu_info']
+            env_summary += f"  - {gpu['name']} ({gpu['memory_gb']:.1f}GB, Compute {gpu['compute_capability']})\n"
+        
+        if env_info['installed_packages']:
+            env_summary += "\nKey Installed Packages:\n"
+            for pkg in sorted(env_info['installed_packages'])[:20]:  # Show top 20 packages
+                env_summary += f"  - {pkg}\n"
+        
+        # Create plan generation messages
+        messages = [
+            Message("system", system_prompt("""an expert ML researcher creating experimental plans. 
+You should create a detailed, actionable plan based on the research idea provided.""")),
+            Message("user", f"""Create a detailed experimental plan based on the following idea:
+                    
+IDEA.md:
+```
 {idea}
-------
+```
 
+Environment Information:
+```
 {env_summary}
+```
 
 The plan should include:
-0. All the relevant information from the idea document
 1. Clear objectives and success criteria
-2. Technical approach and methodology
-3. Key milestones and checkpoints
-4. Potential challenges and mitigation strategies (if any)
-5. Expected outcomes
-6. File management strategy:
-   - Prefer relying on transparent file caching mechanisms provided by libraries such as datasets, transformers, etc.
-   - Prefer streaming option, if possible. The file system available to the experiment is limited.
-   - If the idea document mentions specific files, make sure to reference them in the plan. 
-     If path is not absolute, make it relative to the run directory (i.e. some_file.txt -> ../some_file.txt)
-   - If it's absolutely necessary to share files between runs, use the ../shared_files/ directory
-     In that case you need to clearly specify that code must check for the existence of the file and create it if it doesn't exist.
+2. Methodology and approach
+3. Implementation milestones
+4. Resource requirements
+5. Expected challenges and mitigation strategies
+6. Evaluation metrics
 
-
-Important: 
-- Do not include too many details, as the plan would be executed by a model which is as smart as you are
-- Consider the available compute resources and installed packages when designing the approach.
+Important:
+- Always use fp32 by default to avoid NaN issues
 - If GPU is not available, ensure the plan accounts for CPU-only execution.
+- Include all relevant information from the idea document
+- We should avoid creating files unless absolutely necessary. Within the automated environment results are passed through 
+  standard output, datasets should be processed via streaming.
 
 Format as a structured markdown document.""")
-            ]
-            
-            response = self.client.chat_completion(
-                messages=messages,
-                model=self.model_config.plan_model,
-                temperature=self.config.temperature,
-                max_tokens=self.config.max_tokens_code
-            )
-            
-            plan = self.client.get_completion_text(response)
-            self.plan_file.write_text(plan)
-            log_success("Generated PLAN.md")
+        ]
         
-        # Generate initial tasks if it doesn't exist
-        if not self.tasks_file.exists():
+        # Create context for this call
+        context = CallContext(
+            function_name="initialize_experiment",
+            experiment_id=self.experiment_id,
+            additional_context={"phase": "plan_generation"}
+        )
+        
+        response = self.client.chat_completion(
+            messages=messages,
+            model=self.model_config.plan_model,
+            temperature=self.config.temperature,
+            max_tokens=self.config.max_tokens_code,
+            context=context
+        )
+        
+        plan = self.client.get_completion_text(response)
+        self.plan_file.write_text(plan)
+        log_success("Generated PLAN.md")
+        
+        # Generate initial tasks if none exist
+        if not self.task_manager.tasks:
             log_progress("Generating initial task list")
             
             plan = self.plan_file.read_text()
+            
             messages = [
-                Message("system", system_prompt("""a project manager for ML experiments. Create a general task list.""")),
-                Message("user", f"""Based on this experimental plan, create a task list:
+                Message("system", system_prompt("""a task manager for ML experiments. 
+Create a comprehensive task list based on the experimental plan.""")),
+                Message("user", f"""Create a task list for this ML experiment.
 
+Experimental Idea:
+{idea}
+
+Experimental Plan:
 {plan}
 
-Note: We generally assume that the environment is set up, but it's worth checking that it functions as expected.
+Generate a list of specific, actionable tasks that will help achieve the experimental goals.
+Each task should be:
+- Clear and specific
+- Achievable within a single run
+- Ordered by logical dependencies
+- Marked with appropriate priority (high, medium, low)
 
-Keep things simple, do not create a lot of tasks. Task list will be interpreted by a model which is as smart
-as you (and thus can figure out details on the fly), the primary purpose of the task list is to communicate state 
-between runs.
-
-Organize by priority and include dependencies where relevant.""")
+Respond with a JSON object containing 'tasks' array, where each task has:
+- description: Clear description of what needs to be done
+- priority: 'high', 'medium', or 'low'
+- dependencies: List of task descriptions this depends on (optional)""")
             ]
+            
+            # Create context for this call
+            context = CallContext(
+                function_name="initialize_experiment",
+                experiment_id=self.experiment_id,
+                additional_context={"phase": "task_generation"}
+            )
             
             response = self.client.chat_completion(
                 messages=messages,
                 model=self.model_config.analysis_model,
                 temperature=self.config.temperature,
-                max_tokens=self.config.max_tokens_analysis,
-                response_format={"type": "json_schema", "json_schema": {"name": "initial_tasks", "schema": INITIAL_TASKS_SCHEMA}}
+                response_format={"type": "json_object", "json_schema": {"name": "task_updates", "schema": INITIAL_TASKS_SCHEMA}},
+                context=context
             )
             
-            try:
-                # Parse response and create tasks
-                result = json.loads(self.client.get_completion_text(response))
-                task_list = result.get('tasks', [])
-                
-                for task_data in task_list:
-                    self.task_manager.add_task(
-                        description=task_data['description'],
-                        priority=task_data.get('priority', 'medium')
-                    )
-                
-                log_success(f"Generated {len(task_list)} initial tasks")
-            except Exception as e:
-                log_error(f"Failed to generate initial tasks: {e}")
-                # Create a default task
+            result = json.loads(self.client.get_completion_text(response))
+            
+            # Add tasks
+            for task_data in result.get('tasks', []):
                 self.task_manager.add_task(
-                    "Implement initial training script",
-                    priority="high"
+                    description=task_data['description'],
+                    priority=task_data.get('priority', 'medium'),
+                    dependencies=task_data.get('dependencies')
                 )
+            
+            log_success(f"Generated {len(self.task_manager.tasks)} initial tasks")
         
-        # Initialize EXPERIMENT_LOG.md if it doesn't exist
+        # Initialize findings file if it doesn't exist
         if not self.findings_file.exists():
-            self.findings_file.write_text("# Experiment log\n\nThis document tracks the course of the experiment, including discoveries and results from each run.\n")
-            log_success("Initialized EXPERIMENT_LOG.md")
+            initial_content = f"""# Experiment Log
+
+**Experiment ID:** {self.experiment_id}
+**Started:** {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
+
+## Overview
+This log tracks the progress, findings, and insights from each experimental run.
+
+---
+"""
+            self.findings_file.write_text(initial_content)
     
     def run_experiment(self):
         """Run the main experiment loop."""
@@ -1057,7 +1128,7 @@ Organize by priority and include dependencies where relevant.""")
             
             # Get previous code and logs
             previous_code = self.get_previous_code(current_run)
-            previous_logs = self.get_previous_logs(current_run)
+            previous_logs = self.get_logs(current_run - 1)
             
             # Summarize previous logs if available
             log_summary = None
@@ -1147,61 +1218,6 @@ Organize by priority and include dependencies where relevant.""")
         
         # Display summary
         log_panel(Markdown(report[:1000] + "...\n\n[See REPORT.md for full report]"), "Experiment Summary")
-
-    def detect_common_issues(self, run_number: int, current_summary: str) -> Optional[str]:
-        """Detect common ML experiment issues that might need intervention."""
-        issues = []
-        
-        # Check for repeated errors across runs
-        if run_number > 2:
-            recent_summaries = []
-            for i in range(max(1, run_number - 3), run_number):
-                prev_run_dir = self.experiment_dir / f"run_{i}"
-                prev_log = prev_run_dir / "output.log"
-                if prev_log.exists():
-                    # Extract key info from previous logs
-                    prev_info = extract_key_log_info(prev_log.read_text())
-                    recent_summaries.append(prev_info)
-            
-            # Check for recurring errors
-            current_errors = extract_key_log_info(current_summary).get('errors', [])
-            if current_errors:
-                error_pattern = current_errors[0].lower() if current_errors else ""
-                similar_error_count = sum(
-                    1 for summary in recent_summaries 
-                    if any(error_pattern in str(e).lower() for e in summary.get('errors', []))
-                )
-                if similar_error_count >= 2:
-                    issues.append(f"Recurring error pattern detected across {similar_error_count + 1} runs")
-            
-            # Check for OOM patterns
-            oom_keywords = ['out of memory', 'oom', 'cuda out of memory', 'allocate']
-            current_has_oom = any(keyword in current_summary.lower() for keyword in oom_keywords)
-            prev_oom_count = sum(
-                1 for summary in recent_summaries
-                if any(keyword in str(summary).lower() for keyword in oom_keywords)
-            )
-            if current_has_oom and prev_oom_count >= 1:
-                issues.append("Repeated out-of-memory errors - consider reducing batch size or model size")
-        
-        # Check for no progress (metrics not improving)
-        if run_number > 3:
-            # This is a simple check - could be made more sophisticated
-            if 'loss' in current_summary.lower():
-                # Look for patterns like "loss: X.XX" or "loss = X.XX"
-                import re
-                loss_pattern = r'loss[:\s=]+(\d+\.?\d*)'
-                current_losses = re.findall(loss_pattern, current_summary.lower())
-                if current_losses and len(current_losses) > 0:
-                    # Check if loss is very high (potential divergence)
-                    try:
-                        last_loss = float(current_losses[-1])
-                        if last_loss > 100:
-                            issues.append(f"Loss appears to be diverging ({last_loss:.2f}) - check learning rate")
-                    except:
-                        pass
-        
-        return "\n".join(issues) if issues else None
 
 
 @click.command()

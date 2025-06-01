@@ -109,5 +109,44 @@ When enabled, logs include:
 - Full responses including token usage
 - Timestamps and unique request IDs
 - Errors and retry attempts
+- **Function context**: Which function made the LLM call
+- **Run context**: Associated run number and experiment ID
+- **Performance metrics**: Request duration and token usage
+- **Call metadata**: Module, line number, and additional context
+
+### Interactive Log Viewer
+
+View and analyze LLM logs with the interactive viewer:
+
+```bash
+# View logs from current directory
+python /path/to/view_logs.py
+
+# Specify log directory
+python /path/to/view_logs.py -d experiment/llm_logs
+```
+
+Features:
+- **Browse logs**: Navigate through all LLM interactions with arrow keys
+- **Filter by**:
+  - Function name (e.g., only show `generate_code` calls)
+  - Run number (e.g., only show calls from run 3)
+  - Experiment ID
+- **Sort by**: Timestamp, function, run number, or duration
+- **Timeline view**: See the sequence of LLM calls organized by run and function
+- **Statistics**: View summary stats including token usage, success rate, and performance
+- **Export**: Save filtered logs as JSON/JSONL for further analysis
+
+Keyboard shortcuts:
+- `←/→`: Navigate between log entries
+- `f`: Filter by function
+- `r`: Filter by run number
+- `c`: Clear all filters
+- `s`: Change sort order
+- `d`: Show detailed view of current entry
+- `t`: Show timeline view
+- `a`: Show statistics
+- `h`: Show help
+- `q`: Quit
 
 See [README_LOGGING.md](README_LOGGING.md) for detailed logging documentation.

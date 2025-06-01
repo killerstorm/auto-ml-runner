@@ -9,6 +9,8 @@ import uuid
 from pathlib import Path
 import time
 from config import LoggingConfig
+import inspect
+import traceback
 
 load_dotenv()
 
@@ -19,13 +21,26 @@ class Message:
     content: str
 
 
+@dataclass
+class CallContext:
+    """Context about where the LLM call is coming from."""
+    function_name: str
+    run_number: Optional[int] = None
+    experiment_id: Optional[str] = None
+    iteration: Optional[int] = None
+    task_id: Optional[str] = None
+    module: Optional[str] = None
+    additional_context: Optional[Dict] = None
+
+
 class OpenRouterClient:
     def __init__(
         self, 
         api_key: Optional[str] = None,
         enable_logging: Optional[bool] = None,
         log_dir: Optional[str] = None,
-        max_retries: int = 3
+        max_retries: int = 3,
+        experiment_id: Optional[str] = None
     ):
         self.api_key = api_key or os.getenv("OPENROUTER_API_KEY")
         if not self.api_key:
@@ -44,36 +59,81 @@ class OpenRouterClient:
         self.enable_logging = enable_logging if enable_logging is not None else logging_config.enable_logging
         self.log_dir = Path(log_dir if log_dir is not None else logging_config.log_dir)
         self.max_retries = max_retries
+        self.experiment_id = experiment_id
         
         if self.enable_logging:
             self.log_dir.mkdir(exist_ok=True)
+            # Create a structured log file for this session
+            self.session_log_file = self.log_dir / f"session_{datetime.now().strftime('%Y%m%d_%H%M%S')}.jsonl"
+    
+    def _get_caller_context(self) -> Dict[str, str]:
+        """Extract context about the calling function."""
+        # Go up the stack to find the actual caller (not _log_interaction)
+        stack = inspect.stack()
+        caller_info = {}
+        
+        # Skip our own methods
+        for i, frame_info in enumerate(stack):
+            if frame_info.function not in ['_log_interaction', 'chat_completion', '_get_caller_context']:
+                caller_info = {
+                    'function': frame_info.function,
+                    'module': frame_info.filename.split('/')[-1] if frame_info.filename else 'unknown',
+                    'line': frame_info.lineno
+                }
+                break
+        
+        return caller_info
     
     def _log_interaction(
         self,
         request_id: str,
         request_data: Dict,
         response_data: Optional[Dict] = None,
-        error: Optional[str] = None
+        error: Optional[str] = None,
+        context: Optional[CallContext] = None
     ):
-        """Log LLM interaction to a JSON file."""
+        """Log LLM interaction to both individual JSON and session JSONL file."""
         if not self.enable_logging:
             return
         
-        timestamp = datetime.now().isoformat()
+        timestamp = datetime.now()
+        
+        # Get automatic caller context if not provided
+        caller_info = self._get_caller_context()
+        
         log_entry = {
             "request_id": request_id,
-            "timestamp": timestamp,
+            "timestamp": timestamp.isoformat(),
+            "experiment_id": self.experiment_id,
+            "context": {
+                "function_name": context.function_name if context else caller_info.get('function', 'unknown'),
+                "run_number": context.run_number if context else None,
+                "iteration": context.iteration if context else None,
+                "task_id": context.task_id if context else None,
+                "module": context.module if context else caller_info.get('module', 'unknown'),
+                "line": caller_info.get('line'),
+                "additional": context.additional_context if context else None
+            },
             "request": request_data,
             "response": response_data,
-            "error": error
+            "error": error,
+            "performance": {
+                "duration_ms": None,  # Will be calculated later
+                "tokens_used": response_data.get("usage", {}) if response_data else None
+            }
         }
         
-        # Create filename with timestamp and request ID
-        filename = f"{datetime.now().strftime('%Y%m%d_%H%M%S')}_{request_id}.json"
+        # Create individual file (for backwards compatibility)
+        filename = f"{timestamp.strftime('%Y%m%d_%H%M%S')}_{request_id}.json"
         log_path = self.log_dir / filename
         
         with open(log_path, 'w') as f:
             json.dump(log_entry, f, indent=2)
+        
+        # Append to session log file (JSONL format for streaming)
+        with open(self.session_log_file, 'a') as f:
+            json.dump(log_entry, f)
+            f.write('\n')
     
     def _attempt_json_repair(self, content: str) -> Optional[str]:
         """
@@ -140,6 +200,7 @@ class OpenRouterClient:
         temperature: float = 0.1,
         max_tokens: Optional[int] = None,
         response_format: Optional[Dict] = None,
+        context: Optional[CallContext] = None,
         **kwargs
     ) -> Dict:
         """
@@ -151,12 +212,14 @@ class OpenRouterClient:
             temperature: Sampling temperature (0-2)
             max_tokens: Maximum tokens in response
             response_format: Optional response format (e.g., {"type": "json_object"})
+            context: Optional context about where this call is coming from
             **kwargs: Additional parameters to pass to the API
         
         Returns:
             API response as a dictionary
         """
         request_id = str(uuid.uuid4())[:8]  # Short ID for easier reference
+        start_time = time.time()
         
         # Convert Message objects to dicts
         message_dicts = []
@@ -194,11 +257,13 @@ class OpenRouterClient:
             if response_format:
                 payload["response_format"] = response_format
             
-            # Log the request
+            # Log the request with context
             request_data = {
                 "url": f"{self.base_url}/chat/completions",
                 "payload": payload,
-                "headers": {k: v for k, v in self.headers.items() if k != "Authorization"}  # Don't log API key
+                "headers": {k: v for k, v in self.headers.items() if k != "Authorization"},  # Don't log API key
+                "model": model,
+                "attempt": attempt + 1
             }
             
             try:
@@ -210,7 +275,7 @@ class OpenRouterClient:
                 
                 if response.status_code != 200:
                     error_msg = f"OpenRouter API error: {response.status_code} - {response.text}"
-                    self._log_interaction(request_id, request_data, error=error_msg)
+                    self._log_interaction(request_id, request_data, error=error_msg, context=context)
                     
                     # Check if it's a rate limit error and we should retry
                     if response.status_code == 429 and attempt < self.max_retries - 1:
@@ -226,7 +291,7 @@ class OpenRouterClient:
                 content = response_data.get("choices", [{}])[0].get("message", {}).get("content", "")
                 if not content:
                     error_msg = "Received zero-length response from API"
-                    self._log_interaction(request_id, request_data, response_data, error=error_msg)
+                    self._log_interaction(request_id, request_data, response_data, error=error_msg, context=context)
                     if attempt < self.max_retries - 1:
                         time.sleep(2 ** attempt)  # Exponential backoff
                         continue
@@ -249,12 +314,13 @@ class OpenRouterClient:
                                 request_id,
                                 request_data,
                                 response_data,
-                                error=f"JSON repaired successfully (original error: {str(e)})"
+                                error=f"JSON repaired successfully (original error: {str(e)})",
+                                context=context
                             )
                             return response_data
                         
                         error_msg = f"Invalid JSON in response: {str(e)}"
-                        self._log_interaction(request_id, request_data, response_data, error=error_msg)
+                        self._log_interaction(request_id, request_data, response_data, error=error_msg, context=context)
                         
                         if attempt < self.max_retries - 1:
                             # Check if this might be a truncation issue
@@ -284,7 +350,8 @@ class OpenRouterClient:
                                     request_id,
                                     request_data,
                                     response_data,
-                                    error=f"JSON likely truncated, retrying with max_tokens={max_tokens}"
+                                    error=f"JSON likely truncated, retrying with max_tokens={max_tokens}",
+                                    context=context
                                 )
                             
                             time.sleep(2 ** attempt)  # Exponential backoff
@@ -301,19 +368,24 @@ class OpenRouterClient:
                             request_id, 
                             request_data, 
                             response_data, 
-                            error=f"Hit length limit, retrying with max_tokens={max_tokens}"
+                            error=f"Hit length limit, retrying with max_tokens={max_tokens}",
+                            context=context
                         )
                         time.sleep(1)  # Brief pause before retry
                         continue
                 
-                # Log successful interaction
-                self._log_interaction(request_id, request_data, response_data)
+                # Log successful interaction with timing
+                duration_ms = int((time.time() - start_time) * 1000)
+                if 'performance' not in request_data:
+                    request_data['performance'] = {}
+                request_data['performance']['duration_ms'] = duration_ms
+                self._log_interaction(request_id, request_data, response_data, context=context)
                 
                 return response_data
                 
             except requests.exceptions.RequestException as e:
                 error_msg = f"Request error: {str(e)}"
-                self._log_interaction(request_id, request_data, error=error_msg)
+                self._log_interaction(request_id, request_data, error=error_msg, context=context)
                 if attempt < self.max_retries - 1:
                     time.sleep(2 ** attempt)  # Exponential backoff
                     continue
@@ -327,12 +399,12 @@ class OpenRouterClient:
                         time.sleep(2 ** attempt)  # Exponential backoff
                         continue
                 # Log and re-raise if not retrying
-                self._log_interaction(request_id, request_data, error=str(e))
+                self._log_interaction(request_id, request_data, error=str(e), context=context)
                 raise
         
         # If we've exhausted all retries
         final_error = f"Failed after {self.max_retries} attempts"
-        self._log_interaction(request_id, request_data, error=final_error)
+        self._log_interaction(request_id, request_data, error=final_error, context=context)
         raise Exception(final_error)
     
     def get_completion_text(self, response: Dict) -> str:
