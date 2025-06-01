@@ -428,13 +428,12 @@ Environment:
         
         user_prompt = f"""Generate the complete {main_py} code for run {run_number}.
 
-{env_context}
-
 Important guidelines:
 - Generate a complete, self-contained {main_py} file, not patches or fragments
 - Always use fp32 by default to avoid NaN issues
-- Include proper error handling and logging
-- Log output should go to standard out and standard error, which will be captured by the experiment runner for further analysis
+- Logs can be written to standard out and standard error, which will be captured by the experiment runner for further analysis
+- Print as much information as possible in the early runs or after we encounter an error; this information can be used to diagnose the issue
+- It is permissible to include code needed only for debugging
 - Do not make progress bars (tqdm, etc)
 - Do not create any files unless it's necessary according to the plan
 - Make incremental improvements based on previous results
@@ -451,7 +450,7 @@ File Management:
 General Plan:
 {plan}
 
-Key Findings So Far:
+Experiment log / key findings:
 {findings}
 
 Tasks Status:
@@ -478,7 +477,9 @@ Tasks Status:
         
         user_prompt += """Based on the above context, generate an improved version of main.py that addresses any issues and makes progress toward the experimental goals.
 
-IMPORTANT: Start your response with a list of task IDs you will be working on in this run, formatted as:
+
+Response format:
+Start your response with a list of task IDs you will be working on in this run, formatted as:
 
 WORKING_ON_TASKS:
 - task_001
