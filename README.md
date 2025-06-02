@@ -56,10 +56,10 @@ Options:
 1. **Initialization**: Reads IDEA.md and generates PLAN.md and initial tasks
 2. **Run Loop**: For each run:
    - Creates mechanical summary of previous run's logs (metrics extraction)
-   - Generates complete train.py based on context
+   - Generates complete main.py based on context
    - Executes training and captures output
    - Analyzes results and updates tasks in a single LLM call
-   - Updates KEY_FINDINGS.md with analysis
+   - Updates EXPERIMENT_LOG.md with analysis
 3. **Finalization**: Generates comprehensive REPORT.md
 
 ## File Structure
@@ -69,7 +69,7 @@ experiment/
 ├── IDEA.md           # Your experimental idea (you create this)
 ├── PLAN.md           # Generated experimental plan
 ├── tasks.json        # Task tracking in JSON format
-├── KEY_FINDINGS.md   # Analysis and insights from each run
+├── EXPERIMENT_LOG.md   # Analysis and insights from each run
 ├── REPORT.md         # Final report (generated at end)
 ├── run_1/
 │   ├── main.py      # Generated training code
@@ -91,11 +91,14 @@ python /path/to/view_tasks.py -d experiment/
 
 Environment variables (in .env):
 - `OPENROUTER_API_KEY`: Your OpenRouter API key (required)
-- `SUMMARIZE_MODEL`: Model for log summarization (default: openai/gpt-4o-mini)
-- `CODE_MODEL`: Model for code generation (default: anthropic/claude-3.5-sonnet)
-- `REPORT_MODEL`: Model for report generation (default: anthropic/claude-3.5-sonnet)
+- `SUMMARIZE_MODEL`: Model for log summarization (default: google/gemini-2.0-flash-lite-001)
+- `CODE_MODEL`: Model for code generation (default: google/gemini-2.5-flash-preview-05-20)
+- `REPORT_MODEL`: Model for report generation (default: google/gemini-2.5-flash-preview-05-20)
+- `ANALYSIS_MODEL`: Model for result analysis (default: openai/o4-mini)
 - `MAX_RUNS`: Maximum number of runs (default: 10)
 - `TIMEOUT_SECONDS`: Timeout per run in seconds (default: 7200)
+
+Note: `ANALYSIS_MODEL` needs to generate JSON, currently only OpenAI models seem to be able to do this reliably.
 
 ### LLM Interaction Logging
 

@@ -9,11 +9,11 @@ load_dotenv()
 @dataclass
 class ModelConfig:
     """Configuration for models used in different stages."""
-    summarize_model: str = "openai/gpt-4o-mini"
-    code_model: str = "anthropic/claude-3.5-sonnet"
-    report_model: str = "anthropic/claude-3.5-sonnet"
+    summarize_model: str = "google/gemini-2.0-flash-lite-001"
+    code_model: str = "google/gemini-2.5-flash-preview-05-20"
+    report_model: str = "google/gemini-2.5-flash-preview-05-20"
     plan_model: Optional[str] = None
-    analysis_model: Optional[str] = None
+    analysis_model: Optional[str] = "openai/o4-mini"
     
     def __post_init__(self):
         # Override with environment variables if present
