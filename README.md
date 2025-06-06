@@ -1,6 +1,5 @@
 # Auto ML Runner
 
-NOTE: CURRENTLY LACKING EXIT CRITERIA AND ABORT ON FATAL ERROR.
 USE AT YOUR OWN RISK, it WILL RUN AI-GENERATED CODE without SANDBOX OF ANY KIND.
 
 An automated ML experiment runner that uses LLMs to iteratively improve code and achieve experimental goals.
