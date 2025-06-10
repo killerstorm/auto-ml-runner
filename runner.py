@@ -8,7 +8,7 @@ import subprocess
 from pathlib import Path
 from datetime import datetime
 from typing import Dict, List, Optional, Tuple
-import json
+from collections import Counter
 import click
 from rich.console import Console
 from rich.markdown import Markdown
@@ -363,9 +363,54 @@ class ExperimentRunner:
     
     def summarize_logs(self, logs: str, run_number: int) -> str:
         """Use LLM to create a mechanical summary of the logs."""
+
+        # Pre-process logs to handle repeated lines
+        lines = logs.split('\n')
+        processed_lines = []
+        was_replaced = False
+        i = 0
+        while i < len(lines):
+            line = lines[i]
+            j = i
+            while j < len(lines) and lines[j] == line:
+                j += 1
+            
+            count = j - i
+            
+            if count > 2:
+                processed_lines.append(line)
+                processed_lines.append(line)
+                processed_lines.append('.')
+                was_replaced = True
+            else:
+                processed_lines.extend(lines[i:j])
+                
+            i = j
         
+        # Count all lines to find non-adjacent repeats
+        line_counts = Counter(processed_lines)
+        frequent_lines = [line for line, count in line_counts.items() if count > 5 and line.strip() != '']
+
+        context_message = ""
+        if was_replaced:
+            context_message += "Note: consecutive repeated lines in the logs were replaced with '.' to save space.\n"
+
+        if frequent_lines:
+            # Sort by frequency
+            frequent_lines.sort(key=lambda x: line_counts[x], reverse=True)
+            
+            summary_lines = ["The following lines appeared frequently throughout the logs and may be noisy:"]
+            for line in frequent_lines[:5]: # Report top 5
+                summary_lines.append(f"- (x{line_counts[line]}) `{line}`")
+            context_message += "\n".join(summary_lines) + "\n"
+
+        if context_message:
+            context_message = f"\n{context_message.strip()}\n"
+
+        processed_logs = '\n'.join(processed_lines)
+
         # Restrict logs to reasonable size
-        rlogs = restrict_text(logs, 1500000, 15000)
+        rlogs = restrict_text(processed_logs, 1500000, 15000)
         
         messages = [
             Message("system", system_prompt("""an assistant extracting key information from ML experiment logs.
@@ -382,7 +427,7 @@ FULL LOGS (truncated):
 ------
 {rlogs}
 ------
-
+{context_message}
 Extract and copy important information from training logs.
 Do NOT interpret or analyze - just extract factual information.
 
@@ -541,12 +586,20 @@ Then provide the Python code wrapped in ```python...```, no other explanations."
         
         return working_tasks, code.strip()
     
-    def revise_plan(self, reason: str):
+    def revise_plan(self, reason: str, report: Optional[str] = None):
         """Revise the experimental plan based on current findings."""
         current_plan = self.read_file_safe(self.plan_file)
         findings = self.read_file_safe(self.findings_file)
         task_state = self.task_manager.to_markdown()
         idea = self.read_file_safe(self.idea_file)
+
+        # Archive REPORT.md if it exists
+        report_file = self.experiment_dir / "REPORT.md"
+        if report_file.exists():
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            archive_path = self.experiment_dir / f"REPORT_archive_{timestamp}.md"
+            shutil.copy(report_file, archive_path)
+            log_info(f"Archived previous report as {archive_path.name}")
         
         # Get current environment information
         env_info = get_environment_info()
@@ -566,12 +619,21 @@ Current Environment:
             for pkg in sorted(env_info['installed_packages'])[:15]:
                 env_summary += f"  - {pkg}\n"
         
+        report_section = ""
+        if report:
+            report_section = f"""
+Report based on the progress so far:
+------
+{report}
+------
+"""
+
         messages = [
             Message("system", system_prompt("""an expert ML researcher revising experimental plans. 
 You should maintain the core objectives while adapting the approach based on learnings.""")),
             Message("user", f"""Revise the experimental plan based on current progress and findings.
 
-Reason for revision: {reason}
+Reason/instruction for revision: {reason}
 
 Original idea:
 ------
@@ -592,6 +654,8 @@ Current Task Status:
 ------
 {task_state}
 ------
+
+{report_section}
 
 {env_summary}
 
@@ -626,7 +690,9 @@ Format as a structured markdown document.""")
         # Archive the old plan
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         archive_path = self.experiment_dir / f"PLAN_archive_{timestamp}.md"
-        shutil.copy(self.plan_file, archive_path)
+        if self.plan_file.exists():
+            shutil.copy(self.plan_file, archive_path)
+            log_info(f"Archived old plan as {archive_path.name}")
         
         # Write the revised plan
         self.plan_file.write_text(revised_plan)
@@ -639,7 +705,7 @@ Format as a structured markdown document.""")
         with open(self.findings_file, "a") as f:
             f.write(revision_note)
         
-        log_success(f"Revised experimental plan (archived old plan as {archive_path.name})")
+        log_success(f"Revised experimental plan")
     
     def analyze_run_results(self, run_number: int, log_summary: str, code: str, success: bool) -> Dict[str, any]:
         """Analyze the results of a run and return analysis, findings, and experiment state."""
@@ -1219,8 +1285,9 @@ This log tracks the progress, findings, and insights from each experimental run.
 @click.option('--experiment-dir', '-d', type=click.Path(path_type=Path), 
               default=Path.cwd(), help='Experiment directory')
 @click.option('--max-runs', '-r', type=int, help='Maximum number of runs')
-@click.option('--resume', is_flag=True, help='Resume from last run')
-def main(experiment_dir: Path, max_runs: Optional[int], resume: bool):
+@click.option("--revise-plan", "revise_reason", type=str, default=None, help="Revise the plan with a reason before running. Can be empty.")
+@click.option("--ignore-report", is_flag=True, help="Ignore REPORT.md when revising plan.")
+def main(experiment_dir: Path, max_runs: Optional[int], revise_reason: Optional[str], ignore_report: bool):
     """Auto ML Runner - Automated ML experiment runner using LLMs."""
     # Load configurations
     model_config = ModelConfig()
@@ -1231,6 +1298,24 @@ def main(experiment_dir: Path, max_runs: Optional[int], resume: bool):
     
     # Create runner
     runner = ExperimentRunner(experiment_dir, run_config, model_config)
+
+    if revise_reason is not None:
+        reason = revise_reason
+        report_content = None
+        report_file = experiment_dir / "REPORT.md"
+
+        if not ignore_report and report_file.exists():
+            log_info("Found REPORT.md, including it in plan revision.")
+            report_content = report_file.read_text()
+
+        if not reason:
+            if report_content:
+                reason = "Continue experiment further based on report."
+            else:
+                reason = "Revise plan to improve experiment strategy."
+        
+        log_info(f"Revising plan with reason: '{reason}'")
+        runner.revise_plan(reason=reason, report=report_content)
     
     try:
         runner.run_experiment()
